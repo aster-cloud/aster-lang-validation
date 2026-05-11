@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Layer 2 语义约束验证器，负责对领域对象实例执行业务规则校验。
@@ -25,6 +26,8 @@ import java.util.Objects;
 public class SemanticValidator {
 
     private final ConstructorMetadataCache constructorMetadataCache;
+    /** 缓存已编译的正则表达式，避免热路径上重复编译 */
+    private final ConcurrentHashMap<String, java.util.regex.Pattern> patternCache = new ConcurrentHashMap<>();
 
     public SemanticValidator(ConstructorMetadataCache constructorMetadataCache) {
         this.constructorMetadataCache = constructorMetadataCache;
@@ -204,7 +207,18 @@ public class SemanticValidator {
             return;
         }
 
-        java.util.regex.Pattern compiled = java.util.regex.Pattern.compile(pattern.regexp());
+        java.util.regex.Pattern compiled;
+        try {
+            compiled = patternCache.computeIfAbsent(pattern.regexp(), java.util.regex.Pattern::compile);
+        } catch (java.util.regex.PatternSyntaxException e) {
+            violations.add(new SemanticValidationException.ConstraintViolation(
+                field.getName(),
+                value,
+                Pattern.class.getSimpleName(),
+                "正则表达式语法错误: " + pattern.regexp() + " (" + e.getMessage() + ")"
+            ));
+            return;
+        }
         if (!compiled.matcher(text).matches()) {
             violations.add(new SemanticValidationException.ConstraintViolation(
                 field.getName(),

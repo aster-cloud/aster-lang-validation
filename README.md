@@ -1,5 +1,7 @@
 # aster-lang-validation -- Aster 两层验证框架
 
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
 提供领域对象的两层验证机制：Schema 验证（构造前字段校验）和 Semantic 验证（实例业务规则校验），确保数据从输入到业务逻辑全链路的正确性。
 
 ## 架构

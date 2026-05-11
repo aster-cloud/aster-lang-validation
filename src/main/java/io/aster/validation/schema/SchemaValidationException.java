@@ -11,8 +11,8 @@ public class SchemaValidationException extends RuntimeException {
 
     private static final long serialVersionUID = 1L;
 
-    private final transient List<String> unknownFields;
-    private final transient List<String> missingFields;
+    private final List<String> unknownFields;
+    private final List<String> missingFields;
 
     public SchemaValidationException(List<String> unknownFields, List<String> missingFields) {
         super(buildMessage(unknownFields, missingFields));

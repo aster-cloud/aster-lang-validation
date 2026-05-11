@@ -15,7 +15,7 @@ public class SemanticValidationException extends RuntimeException {
     @Serial
     private static final long serialVersionUID = 1L;
 
-    private final transient List<ConstraintViolation> violations;
+    private final List<ConstraintViolation> violations;
 
     public SemanticValidationException(List<ConstraintViolation> violations) {
         super(buildMessage(violations));
@@ -46,7 +46,7 @@ public class SemanticValidationException extends RuntimeException {
         private static final long serialVersionUID = 1L;
 
         private final String fieldName;
-        private final transient Object actualValue;
+        private final Object actualValue;
         private final String constraintType;
         private final String message;
 
