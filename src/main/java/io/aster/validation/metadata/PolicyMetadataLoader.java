@@ -35,8 +35,58 @@ public class PolicyMetadataLoader {
     private static final Logger logger = LoggerFactory.getLogger(PolicyMetadataLoader.class);
     private static final String POLICY_CLASS_SUFFIX = "_fn";
 
+    /**
+     * System property / environment variable name from which the default
+     * allowlist is loaded. Comma-separated package prefixes. This lets
+     * deployments configure the allowlist without code changes and avoids
+     * the previous "default = empty = reject everything" behavior that
+     * would have broken existing callers on upgrade.
+     *
+     * Example: {@code -Daster.policy.packages=io.aster.policy,com.example.rules}
+     */
+    public static final String POLICY_PACKAGES_PROPERTY = "aster.policy.packages";
+    public static final String POLICY_PACKAGES_ENV = "ASTER_POLICY_PACKAGES";
+
     private final ConcurrentHashMap<String, PolicyMetadata> metadataCache = new ConcurrentHashMap<>();
-    private volatile Set<String> packageAllowlist = Set.of();
+    private volatile Set<String> packageAllowlist;
+
+    /**
+     * Default constructor: reads allowlist from system property or env var.
+     * Use {@link #PolicyMetadataLoader(Set)} for programmatic configuration.
+     */
+    public PolicyMetadataLoader() {
+        this.packageAllowlist = loadAllowlistFromEnvironment();
+    }
+
+    /**
+     * Programmatic constructor: caller provides the package allowlist directly.
+     * Pass {@code null} or empty set for strictest fail-closed (reject every load).
+     */
+    public PolicyMetadataLoader(Set<String> packageAllowlist) {
+        this.packageAllowlist = packageAllowlist == null ? Set.of() : Set.copyOf(packageAllowlist);
+    }
+
+    private static Set<String> loadAllowlistFromEnvironment() {
+        String value = System.getProperty(POLICY_PACKAGES_PROPERTY);
+        if (value == null || value.isBlank()) value = System.getenv(POLICY_PACKAGES_ENV);
+        if (value == null || value.isBlank()) {
+            logger.info(
+                "PolicyMetadataLoader allowlist is empty (no {} or {} set). " +
+                "All loadPolicyMetadata() calls will be rejected as SecurityException. " +
+                "Configure the allowlist before loading policies.",
+                POLICY_PACKAGES_PROPERTY, POLICY_PACKAGES_ENV
+            );
+            return Set.of();
+        }
+        Set<String> packages = java.util.Arrays.stream(value.split(","))
+            .map(String::trim)
+            .filter(s -> !s.isEmpty())
+            .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        logger.info("PolicyMetadataLoader allowlist loaded from {}: {}",
+            System.getProperty(POLICY_PACKAGES_PROPERTY) != null ? POLICY_PACKAGES_PROPERTY : POLICY_PACKAGES_ENV,
+            packages);
+        return packages;
+    }
 
     /**
      * 配置允许反射加载的包前缀集合。空集表示拒绝所有加载（fail-closed）。
@@ -147,6 +197,12 @@ public class PolicyMetadataLoader {
             }
             try {
                 loadPolicyMetadata(qualifiedName);
+            } catch (SecurityException se) {
+                // Security denials must propagate — they indicate a misconfigured
+                // allowlist, not a transient/per-policy failure. Wrapping them as
+                // a generic warning would hide a deployment-level mistake.
+                logger.error("预加载策略元数据被安全策略拒绝: {} - {}", qualifiedName, se.getMessage());
+                throw se;
             } catch (RuntimeException ex) {
                 logger.warn("预加载策略元数据失败: {} - {}", qualifiedName, ex.getMessage());
             }
