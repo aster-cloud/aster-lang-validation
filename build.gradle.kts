@@ -41,8 +41,8 @@ dependencies {
     // 日志
     implementation("org.slf4j:slf4j-api:2.0.9")
 
-    // 测试
-    testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
+    // 测试 — JUnit 6 与 aster-lang-core/truffle 对齐
+    testImplementation("org.junit.jupiter:junit-jupiter:6.0.0")
     testImplementation("org.assertj:assertj-core:3.27.6")
     testImplementation("org.mockito:mockito-core:5.5.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")

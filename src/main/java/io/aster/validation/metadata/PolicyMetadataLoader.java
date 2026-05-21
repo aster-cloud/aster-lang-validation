@@ -11,18 +11,44 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.jar.JarEntry;
 import java.util.jar.JarInputStream;
 
 /**
  * 策略元数据加载器，负责动态加载策略类并缓存反射信息。
+ *
+ * <p>安全约束：
+ * <ol>
+ *   <li>仅加载以 {@code _fn} 结尾的策略类（编译器约定），其他类一律拒绝</li>
+ *   <li>包名必须通过 {@link #setPackageAllowlist(Set)} 显式声明，默认空集 =
+ *       拒绝所有反射加载（fail-closed）；调用方在初始化阶段提供策略包前缀</li>
+ *   <li>仅解析 {@code public static} 方法，避免反射调用任意实例方法</li>
+ * </ol>
+ *
+ * <p>修复了 R2 codex 后端审查 #10：未受控的 {@code Class.forName} 在多租户
+ * 环境下可被滥用为反射攻击面。
  */
 public class PolicyMetadataLoader {
 
     private static final Logger logger = LoggerFactory.getLogger(PolicyMetadataLoader.class);
+    private static final String POLICY_CLASS_SUFFIX = "_fn";
 
     private final ConcurrentHashMap<String, PolicyMetadata> metadataCache = new ConcurrentHashMap<>();
+    private volatile Set<String> packageAllowlist = Set.of();
+
+    /**
+     * 配置允许反射加载的包前缀集合。空集表示拒绝所有加载（fail-closed）。
+     * 应在应用启动期间一次性调用；运行时变更允许，会刷新缓存外的新查询。
+     */
+    public void setPackageAllowlist(Set<String> packages) {
+        this.packageAllowlist = packages == null ? Set.of() : Set.copyOf(packages);
+    }
+
+    public Set<String> getPackageAllowlist() {
+        return packageAllowlist;
+    }
 
     /**
      * 根据策略限定名加载元数据信息，并进行缓存。
@@ -50,9 +76,24 @@ public class PolicyMetadataLoader {
         String policyModule = qualifiedName.substring(0, lastDot);
         String policyFunction = qualifiedName.substring(lastDot + 1);
 
+        // Allowlist 强制 — 默认空集就是拒绝所有加载。
+        // 此校验必须在 Class.forName 之前进行；否则任意类名都会被尝试解析。
+        if (!isPackageAllowed(policyModule)) {
+            throw new SecurityException(
+                "Policy package not in allowlist: " + policyModule +
+                " (allowed: " + packageAllowlist + "). " +
+                "Call PolicyMetadataLoader.setPackageAllowlist(...) before loading policies."
+            );
+        }
+
         try {
-            String className = policyModule + "." + policyFunction + "_fn";
+            String className = policyModule + "." + policyFunction + POLICY_CLASS_SUFFIX;
             Class<?> policyClass = Class.forName(className);
+
+            // 后置校验：即使包名允许，类名必须以 _fn 结尾（编译器约定的策略类）。
+            if (!policyClass.getName().endsWith(POLICY_CLASS_SUFFIX)) {
+                throw new SecurityException("Loaded class does not have _fn suffix: " + policyClass.getName());
+            }
 
             Method functionMethod = findPolicyMethod(policyClass, policyFunction);
             MethodHandle handle = MethodHandles.publicLookup().unreflect(functionMethod);
@@ -65,9 +106,25 @@ public class PolicyMetadataLoader {
                 spreadInvoker,
                 functionMethod.getParameters()
             );
+        } catch (SecurityException se) {
+            // 不要把安全拒绝包装成 RuntimeException — 调用方需要能识别这是
+            // 安全策略拒绝，而不是 ClassNotFoundException 之类的运行时故障。
+            throw se;
         } catch (Throwable e) {
             throw new RuntimeException("Failed to load policy metadata: " + qualifiedName, e);
         }
+    }
+
+    private boolean isPackageAllowed(String packageName) {
+        if (packageAllowlist.isEmpty()) {
+            return false;
+        }
+        for (String allowed : packageAllowlist) {
+            if (packageName.equals(allowed) || packageName.startsWith(allowed + ".")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Method findPolicyMethod(Class<?> policyClass, String functionName) {

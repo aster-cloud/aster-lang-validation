@@ -46,8 +46,27 @@ public class SemanticValidator {
             if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
                 continue;
             }
+            // 仅当字段带有约束注解时才需要读取值；无注解的字段直接跳过，
+            // 避免对所有字段都进行 trySetAccessible 调用。
+            if (!hasAnyConstraint(field)) {
+                continue;
+            }
 
-            Object value = readFieldValue(instance, field);
+            Object value;
+            try {
+                value = readFieldValue(instance, field);
+            } catch (FieldAccessSkippedException skip) {
+                // Fail-closed: 反射不可访问时不再静默跳过，作为 violation 上报。
+                // 之前的实现返回 null 并继续，等同于"绕过验证"——在 OverlayValidator
+                // R2 codex 审查中被列为同性质的 silent-pass 风险。
+                violations.add(new SemanticValidationException.ConstraintViolation(
+                    field.getName(),
+                    null,
+                    "field-access",
+                    "字段不可反射访问，无法执行约束校验：" + skip.getMessage()
+                ));
+                continue;
+            }
             processRangeConstraint(field, value, violations);
             processNotEmptyConstraint(field, value, violations);
             processPatternConstraint(field, value, violations);
@@ -56,6 +75,17 @@ public class SemanticValidator {
         if (!violations.isEmpty()) {
             throw new SemanticValidationException(violations);
         }
+    }
+
+    private boolean hasAnyConstraint(Field field) {
+        return field.isAnnotationPresent(Range.class)
+            || field.isAnnotationPresent(NotEmpty.class)
+            || field.isAnnotationPresent(Pattern.class);
+    }
+
+    /** 信号异常：反射不可访问字段。由 {@link #readFieldValue} 抛出，{@link #validateSemantics} 转译成 violation。 */
+    private static final class FieldAccessSkippedException extends RuntimeException {
+        FieldAccessSkippedException(String message) { super(message); }
     }
 
     private List<Field> collectAllFields(Class<?> type) {
@@ -78,20 +108,23 @@ public class SemanticValidator {
         return fields;
     }
 
+    /**
+     * 读取字段值。fail-closed：反射不可访问会抛 {@link FieldAccessSkippedException}，
+     * 调用方应当转译成 violation；不再返回 null 静默跳过。
+     */
     private Object readFieldValue(Object instance, Field field) {
         boolean accessible = field.canAccess(instance);
         try {
             if (!accessible) {
-                // 使用 trySetAccessible() 代替 setAccessible(true) 以支持 JMH 等受限环境
-                // 如果返回 false，跳过该字段的验证（假设默认值有效）
                 if (!field.trySetAccessible()) {
-                    return null; // 无法访问时返回 null，跳过后续验证
+                    throw new FieldAccessSkippedException(
+                        "field.trySetAccessible() returned false (module/JMH restriction?)"
+                    );
                 }
             }
             return field.get(instance);
         } catch (IllegalAccessException ex) {
-            // 反射访问失败时返回 null，允许验证继续但跳过此字段
-            return null;
+            throw new FieldAccessSkippedException("IllegalAccessException: " + ex.getMessage());
         } finally {
             if (!accessible && field.canAccess(instance)) {
                 field.setAccessible(false);
