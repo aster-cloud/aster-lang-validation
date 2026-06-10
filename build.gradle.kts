@@ -9,7 +9,7 @@ repositories {
 }
 
 group = "cloud.aster-lang"
-version = "0.0.1"
+version = "1.0.0"
 
 publishing {
     publications {
