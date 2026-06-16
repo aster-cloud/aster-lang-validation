@@ -9,6 +9,7 @@ import io.aster.validation.testdata.LoanApplicationWithConstraints;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -185,6 +186,30 @@ class  SemanticValidatorTest {
     }
 
     @Test
+    void testValidateSemantics_floatRangeDefaults_ordinaryValuesPass() {
+        // With the buggy default (Double.MIN_VALUE, ~4.9e-324), these ordinary
+        // values would all be flagged as below the minimum. With the fixed
+        // default (-Double.MAX_VALUE) they must pass.
+        assertThatCode(() -> semanticValidator.validateSemantics(new DefaultRangeHolder(0.0, BigDecimal.ZERO)))
+            .doesNotThrowAnyException();
+        assertThatCode(() -> semanticValidator.validateSemantics(new DefaultRangeHolder(-5.0, new BigDecimal("-5.0"))))
+            .doesNotThrowAnyException();
+        assertThatCode(() -> semanticValidator.validateSemantics(new DefaultRangeHolder(3.14, new BigDecimal("3.14"))))
+            .doesNotThrowAnyException();
+    }
+
+    @Test
+    void testValidateSemantics_explicitFloatRange_outOfRangeFails() {
+        ExplicitDoubleRangeHolder instance = new ExplicitDoubleRangeHolder(150.0);
+
+        assertThatThrownBy(() -> semanticValidator.validateSemantics(instance))
+            .isInstanceOf(SemanticValidationException.class)
+            .satisfies(ex -> assertThat(((SemanticValidationException) ex).getViolations())
+                .extracting(ConstraintViolation::fieldName)
+                .contains("value"));
+    }
+
+    @Test
     void testValidateSemantics_exceptionMessage() {
         LoanApplicationWithConstraints instance = new LoanApplicationWithConstraints(
             "app-1",
@@ -268,6 +293,35 @@ class  SemanticValidatorTest {
 
         public DoubleRangeHolder(Double ratio) {
             this.ratio = ratio;
+        }
+    }
+
+    /**
+     * 浮点类型 @Range 未覆盖 minDouble 的默认下界场景。
+     * 普通数值（0、负数、正数）都应通过校验。
+     */
+    public static class DefaultRangeHolder {
+        @Range(maxDouble = 1000.0)
+        private final Double ratio;
+
+        @Range(maxDouble = 1000.0)
+        private final BigDecimal amount;
+
+        public DefaultRangeHolder(Double ratio, BigDecimal amount) {
+            this.ratio = ratio;
+            this.amount = amount;
+        }
+    }
+
+    /**
+     * 显式设置浮点上下界，验证越界仍被拦截。
+     */
+    public static class ExplicitDoubleRangeHolder {
+        @Range(minDouble = 0.0, maxDouble = 100.0)
+        private final Double value;
+
+        public ExplicitDoubleRangeHolder(Double value) {
+            this.value = value;
         }
     }
 }

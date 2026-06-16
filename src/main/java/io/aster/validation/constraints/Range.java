@@ -18,7 +18,7 @@ public @interface Range {
 
     long max() default Long.MAX_VALUE;
 
-    double minDouble() default Double.MIN_VALUE;
+    double minDouble() default -Double.MAX_VALUE;
 
     double maxDouble() default Double.MAX_VALUE;
 
