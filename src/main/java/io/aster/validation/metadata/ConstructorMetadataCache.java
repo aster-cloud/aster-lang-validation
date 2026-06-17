@@ -20,7 +20,44 @@ public class ConstructorMetadataCache {
 
     private static final Logger logger = LoggerFactory.getLogger(ConstructorMetadataCache.class);
 
+    /**
+     * Policy controlling what happens when a non-record class is missing reliable
+     * constructor parameter names (i.e. compiled without {@code -parameters} and not
+     * a record). In that situation, mapping {@code field[i] -> i} is an unsafe guess
+     * because field declaration order is not guaranteed to match constructor
+     * parameter order.
+     */
+    public enum UnreliableMappingPolicy {
+        /**
+         * Default. Treat the schema mapping as unavailable (empty mapping) and mark
+         * {@link ConstructorMetadata#isFallbackToFieldOrder()} so callers can detect
+         * that schema validation cannot be performed for this type. No silent guess.
+         */
+        SKIP,
+        /**
+         * Fail fast with a clear {@link UnreliableConstructorMappingException} rather
+         * than producing a mapping that may be wrong.
+         */
+        THROW
+    }
+
     private final ConcurrentHashMap<Class<?>, ConstructorMetadata> constructorCache = new ConcurrentHashMap<>();
+
+    private final UnreliableMappingPolicy unreliableMappingPolicy;
+
+    public ConstructorMetadataCache() {
+        this(UnreliableMappingPolicy.SKIP);
+    }
+
+    public ConstructorMetadataCache(UnreliableMappingPolicy unreliableMappingPolicy) {
+        this.unreliableMappingPolicy = unreliableMappingPolicy == null
+            ? UnreliableMappingPolicy.SKIP
+            : unreliableMappingPolicy;
+    }
+
+    public UnreliableMappingPolicy getUnreliableMappingPolicy() {
+        return unreliableMappingPolicy;
+    }
 
     /**
      * 获取目标类型的构造器元数据，若不存在则创建后缓存。
@@ -94,6 +131,12 @@ public class ConstructorMetadataCache {
             return mapping;
         }
 
+        // No-arg constructor: nothing to map, and nothing to guess. Empty mapping
+        // is correct and unambiguous, so don't treat it as unreliable.
+        if (parameters.length == 0) {
+            return mapping;
+        }
+
         boolean parameterNamesPresent = Arrays.stream(parameters).allMatch(Parameter::isNamePresent);
         if (parameterNamesPresent) {
             for (int i = 0; i < parameters.length; i++) {
@@ -102,26 +145,26 @@ public class ConstructorMetadataCache {
             return mapping;
         }
 
-        if (fields != null) {
-            for (int i = 0; i < fields.length && i < parameters.length; i++) {
-                mapping.putIfAbsent(fields[i].getName(), i);
-            }
-        }
-
-        if (mapping.isEmpty()) {
-            logger.warn("类{}的构造器参数名不可用，字段数量为{}，构造器参数数量为{}，无法建立精确映射，将按索引直接回填。",
-                clazz.getName(),
+        // Non-record class without reliable parameter names. We must NOT guess by
+        // index: field declaration order is not guaranteed to equal constructor
+        // parameter order, so a field[i] -> i mapping can silently mis-bind values
+        // to the wrong constructor argument. Either skip (treat mapping as
+        // unavailable) or throw, per the configured policy.
+        if (unreliableMappingPolicy == UnreliableMappingPolicy.THROW) {
+            throw new UnreliableConstructorMappingException(clazz,
                 fields == null ? 0 : fields.length,
-                constructor.getParameterCount()
-            );
-            for (int i = 0; i < parameters.length; i++) {
-                mapping.put(parameters[i].getName() != null ? parameters[i].getName() : "arg" + i, i);
-            }
-        } else {
-            logger.warn("类{}的构造器参数名不可用，已按字段声明顺序建立映射，建议编译时启用-parameters。", clazz.getName());
+                constructor.getParameterCount());
         }
 
-        return mapping;
+        logger.warn(
+            "类{}既非记录类型且构造器参数名不可用（字段数量={}, 构造器参数数量={}），" +
+            "无法可靠建立 field->parameter 映射；schema 映射将被视为不可用（跳过）。" +
+            "建议将该类型声明为 record，或编译时启用 -parameters。",
+            clazz.getName(),
+            fields == null ? 0 : fields.length,
+            constructor.getParameterCount()
+        );
+        return mapping; // intentionally empty -> mapping unavailable, no silent guess
     }
 
     private boolean shouldMarkFallback(Class<?> clazz, Parameter[] parameters) {
