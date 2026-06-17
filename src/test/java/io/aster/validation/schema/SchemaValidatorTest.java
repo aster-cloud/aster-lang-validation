@@ -64,20 +64,24 @@ class SchemaValidatorTest {
     }
 
     @Test
-    void testValidateSchema_missingFieldWithDefault() {
+    void testValidateSchema_missingFieldWithDefault_lenient() {
+        SchemaValidator lenient = new SchemaValidator(
+            constructorMetadataCache, SchemaValidator.MissingFieldPolicy.LENIENT);
         Map<String, Object> input = new HashMap<>();
         input.put("name", "Alice");
         input.put("age", 28);
 
-        assertThatCode(() -> schemaValidator.validateSchema(SampleClass.class, input))
+        assertThatCode(() -> lenient.validateSchema(SampleClass.class, input))
             .doesNotThrowAnyException();
     }
 
     @Test
-    void testValidateSchema_emptyMap() {
+    void testValidateSchema_emptyMap_lenient() {
+        SchemaValidator lenient = new SchemaValidator(
+            constructorMetadataCache, SchemaValidator.MissingFieldPolicy.LENIENT);
         Map<String, Object> input = new HashMap<>();
 
-        assertThatCode(() -> schemaValidator.validateSchema(SampleClass.class, input))
+        assertThatCode(() -> lenient.validateSchema(SampleClass.class, input))
             .doesNotThrowAnyException();
     }
 
@@ -136,6 +140,71 @@ class SchemaValidatorTest {
                 assertThat(validationException.getUnknownFields()).containsExactly("Name");
                 assertThat(validationException.getMissingFields()).contains("name");
             });
+    }
+
+    @Test
+    void testValidateSchema_strictRejectsMissingRequired() {
+        // Default validator is STRICT.
+        Map<String, Object> input = new HashMap<>();
+        input.put("name", "Alice");
+        input.put("age", 28);
+        // "active" missing -> required -> STRICT must reject
+
+        assertThatThrownBy(() -> schemaValidator.validateSchema(SampleClass.class, input))
+            .isInstanceOf(SchemaValidationException.class)
+            .satisfies(ex -> {
+                SchemaValidationException validationException = (SchemaValidationException) ex;
+                assertThat(validationException.getMissingFields()).containsExactly("active");
+            });
+    }
+
+    @Test
+    void testValidateSchema_strictAllowsMissingOptionalParam() {
+        // "note" is backed by an Optional<String> constructor parameter, so it may
+        // be omitted even under STRICT. "title" is required and present.
+        Map<String, Object> input = new HashMap<>();
+        input.put("title", "T");
+
+        assertThatCode(() -> schemaValidator.validateSchema(WithOptionalParam.class, input))
+            .doesNotThrowAnyException();
+    }
+
+    @Test
+    void testValidateSchema_strictRejectsMissingRequiredEvenWithOptionalPresent() {
+        // "title" (required) missing -> reject; "note" (Optional) absent is fine.
+        Map<String, Object> input = new HashMap<>();
+
+        assertThatThrownBy(() -> schemaValidator.validateSchema(WithOptionalParam.class, input))
+            .isInstanceOf(SchemaValidationException.class)
+            .satisfies(ex -> {
+                SchemaValidationException validationException = (SchemaValidationException) ex;
+                assertThat(validationException.getMissingFields()).containsExactly("title");
+            });
+    }
+
+    @Test
+    void testValidateSchema_lenientPassesThroughMissingRequired() {
+        SchemaValidator lenient = new SchemaValidator(
+            constructorMetadataCache, SchemaValidator.MissingFieldPolicy.LENIENT);
+        Map<String, Object> input = new HashMap<>();
+        input.put("name", "Alice");
+        // age + active missing, but LENIENT only warns
+
+        assertThatCode(() -> lenient.validateSchema(SampleClass.class, input))
+            .doesNotThrowAnyException();
+    }
+
+    /**
+     * 用于测试 Optional 构造器参数（必填字段过滤）的样例。
+     */
+    public static class WithOptionalParam {
+        private final String title;
+        private final java.util.Optional<String> note;
+
+        public WithOptionalParam(String title, java.util.Optional<String> note) {
+            this.title = title;
+            this.note = note;
+        }
     }
 
     /**

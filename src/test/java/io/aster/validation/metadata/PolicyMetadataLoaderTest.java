@@ -60,6 +60,32 @@ class PolicyMetadataLoaderTest {
     }
 
     @Test
+    @DisplayName("多个同名 public static 重载: 拒绝并给出清晰错误,而非任意选第一个")
+    void ambiguousOverloadsAreRejected() {
+        PolicyMetadataLoader loader = new PolicyMetadataLoader(Set.of("io.aster.validation.testdata"));
+        // The loader wraps load-time contract failures in a RuntimeException
+        // (same as the "method not found" case); the clear ambiguity message is on
+        // the cause. Either way the failure must be deterministic and explanatory.
+        assertThatThrownBy(() ->
+                loader.loadPolicyMetadata("io.aster.validation.testdata.overloaded"))
+            .isInstanceOf(RuntimeException.class)
+            .hasMessageContaining("io.aster.validation.testdata.overloaded")
+            .rootCause()
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("多个 public static 重载")
+            .hasMessageContaining("overloaded");
+    }
+
+    @Test
+    @DisplayName("单一 public static 入口: 正常加载成功")
+    void singleStaticMethodLoadsSuccessfully() {
+        PolicyMetadataLoader loader = new PolicyMetadataLoader(Set.of("io.aster.validation.testdata"));
+        PolicyMetadata metadata = loader.loadPolicyMetadata("io.aster.validation.testdata.single");
+        assertThat(metadata).isNotNull();
+        assertThat(metadata.getMethod().getName()).isEqualTo("single");
+    }
+
+    @Test
     @DisplayName("preloadPolicies 在遇到 SecurityException 时必须 rethrow,不能降级为 warn")
     void preloadPropagatesSecurityException() {
         PolicyMetadataLoader loader = new PolicyMetadataLoader(Set.of());  // 全拒绝

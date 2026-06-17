@@ -178,13 +178,38 @@ public class PolicyMetadataLoader {
     }
 
     private Method findPolicyMethod(Class<?> policyClass, String functionName) {
+        List<Method> matches = new ArrayList<>();
         for (Method method : policyClass.getDeclaredMethods()) {
-            if (method.getName().equals(functionName) &&
-                java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
-                return method;
+            int modifiers = method.getModifiers();
+            if (method.getName().equals(functionName)
+                && java.lang.reflect.Modifier.isStatic(modifiers)
+                && java.lang.reflect.Modifier.isPublic(modifiers)) {
+                matches.add(method);
             }
         }
-        throw new IllegalArgumentException("未找到策略方法: " + functionName);
+
+        if (matches.isEmpty()) {
+            throw new IllegalArgumentException("未找到策略方法: " + functionName
+                + " (类: " + policyClass.getName() + ")");
+        }
+        if (matches.size() > 1) {
+            // Multiple public-static overloads share the name. Picking the first is
+            // nondeterministic (declared-method order is unspecified), so reject
+            // rather than silently bind to an arbitrary overload. Policy classes are
+            // expected to declare exactly one public-static entry point per name.
+            StringBuilder signatures = new StringBuilder();
+            for (Method m : matches) {
+                if (signatures.length() > 0) {
+                    signatures.append(", ");
+                }
+                signatures.append(m.getParameterCount()).append("-arg ").append(m);
+            }
+            throw new IllegalArgumentException(
+                "策略方法存在多个 public static 重载，无法确定调用目标: " + functionName
+                + " (类: " + policyClass.getName() + ", 候选: " + signatures + ")。"
+                + " 策略类应为每个名称仅声明一个 public static 入口。");
+        }
+        return matches.get(0);
     }
 
     public void preloadPolicies(Collection<String> qualifiedNames) {
