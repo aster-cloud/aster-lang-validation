@@ -9,7 +9,12 @@ repositories {
 }
 
 group = "cloud.aster-lang"
-version = "1.0.6"
+
+// Maven 制品版本 = 共享版本目录的 asterLang（JVM 生态单一版本源，ADR 0012/0023 §9）。
+// 不硬编码字面量——字面量是版本漂移的来源。从 catalog 派生让版本永远跟随 ecosystemVersion。
+// 与 core/truffle/runtime/locales/hi 同构（settings 已声明 asterLibs catalog）。
+version = extensions.getByType<VersionCatalogsExtension>()
+    .named("asterLibs").findVersion("asterLang").get().requiredVersion
 
 publishing {
     publications {

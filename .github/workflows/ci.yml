@@ -32,5 +32,11 @@ jobs:
           distribution: 'temurin'
           cache: 'gradle'
 
+      # catalog bootstrap（ADR 0023 §9）：本仓 version=catalog-derived，settings 从
+      # mavenLocal 解析 catalog → 须先把已 checkout 的 platform publishToMavenLocal，
+      # 否则 ./gradlew 配置期解析不到 asterLibs catalog（原 issue #6 deferred 的顾虑，本次消解）。
+      - name: Bootstrap version catalog to Maven Local
+        run: cd aster-lang-platform && ./gradlew publishToMavenLocal
+
       - name: Build & Test
         run: ./gradlew build
