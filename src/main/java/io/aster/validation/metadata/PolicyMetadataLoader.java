@@ -94,6 +94,27 @@ public class PolicyMetadataLoader {
      */
     public void setPackageAllowlist(Set<String> packages) {
         this.packageAllowlist = packages == null ? Set.of() : Set.copyOf(packages);
+        // Security-critical: tightening the allowlist must not leave already-cached
+        // policies from now-forbidden packages invocable. computeIfAbsent skips the
+        // allowlist check on a cache hit, so a stale entry would remain a bypass.
+        // Evict every cached policy whose module is no longer allowed.
+        evictForbiddenFromCache();
+    }
+
+    /**
+     * Drop cached metadata whose module no longer passes the current allowlist.
+     * Called after any allowlist mutation so cache hits can never outlive the
+     * permission that admitted them.
+     */
+    private void evictForbiddenFromCache() {
+        metadataCache.keySet().removeIf(qualifiedName -> {
+            int lastDot = qualifiedName.lastIndexOf('.');
+            if (lastDot <= 0) {
+                return true; // malformed key: cannot prove it is allowed → evict
+            }
+            String module = qualifiedName.substring(0, lastDot);
+            return !isPackageAllowed(module);
+        });
     }
 
     public Set<String> getPackageAllowlist() {

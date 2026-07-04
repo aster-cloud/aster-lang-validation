@@ -32,12 +32,20 @@ public class ConstructorMetadata {
         return constructor;
     }
 
+    /**
+     * Returns a defensive copy of the constructor parameters. The array is cloned so
+     * a caller cannot corrupt the process-wide cached metadata via {@code array[i] = ...}.
+     */
     public Parameter[] getParameters() {
-        return parameters;
+        return parameters == null ? null : parameters.clone();
     }
 
+    /**
+     * Returns a defensive copy of the declared fields. The array is cloned so a caller
+     * cannot corrupt the process-wide cached metadata via {@code array[i] = ...}.
+     */
     public Field[] getFields() {
-        return fields;
+        return fields == null ? null : fields.clone();
     }
 
     public Map<String, Integer> getFieldNameToParameterIndex() {

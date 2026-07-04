@@ -86,6 +86,28 @@ class PolicyMetadataLoaderTest {
     }
 
     @Test
+    @DisplayName("收紧 allowlist: 之前缓存的现已禁止的策略必须被逐出,不能继续可调用")
+    void shrinkingAllowlistEvictsCachedForbiddenPolicy() {
+        PolicyMetadataLoader loader = new PolicyMetadataLoader(Set.of("io.aster.validation.testdata"));
+        // Load and cache a genuinely resolvable, currently-allowed policy.
+        PolicyMetadata cached = loader.loadPolicyMetadata("io.aster.validation.testdata.single");
+        assertThat(cached).isNotNull();
+
+        // Tighten the allowlist so the previously-loaded package is now forbidden.
+        loader.setPackageAllowlist(Set.of("com.example.other"));
+
+        // Without cache eviction the stale metadataCache entry would keep the now
+        // forbidden policy invocable (a security bypass). It must be rejected.
+        assertThatThrownBy(() -> loader.loadPolicyMetadata("io.aster.validation.testdata.single"))
+            .isInstanceOf(SecurityException.class)
+            .hasMessageContaining("not in allowlist");
+
+        // A still-allowed policy remains loadable after the shrink.
+        loader.setPackageAllowlist(Set.of("io.aster.validation.testdata"));
+        assertThat(loader.loadPolicyMetadata("io.aster.validation.testdata.single")).isNotNull();
+    }
+
+    @Test
     @DisplayName("preloadPolicies 在遇到 SecurityException 时必须 rethrow,不能降级为 warn")
     void preloadPropagatesSecurityException() {
         PolicyMetadataLoader loader = new PolicyMetadataLoader(Set.of());  // 全拒绝

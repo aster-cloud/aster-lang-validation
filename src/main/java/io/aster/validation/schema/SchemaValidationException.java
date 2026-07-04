@@ -20,6 +20,18 @@ public class SchemaValidationException extends RuntimeException {
         this.missingFields = missingFields == null ? Collections.emptyList() : List.copyOf(missingFields);
     }
 
+    /**
+     * Fail-safe constructor for cases where the schema cannot be validated at all
+     * (e.g. an unreliable field mapping under STRICT policy). Carries an explicit
+     * message and empty field lists, signalling that validation could not proceed
+     * rather than that specific fields were unknown/missing.
+     */
+    public SchemaValidationException(String message) {
+        super(message);
+        this.unknownFields = Collections.emptyList();
+        this.missingFields = Collections.emptyList();
+    }
+
     public List<String> getUnknownFields() {
         return unknownFields;
     }
