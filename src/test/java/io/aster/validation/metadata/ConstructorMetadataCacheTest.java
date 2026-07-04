@@ -75,6 +75,35 @@ class ConstructorMetadataCacheTest {
             .hasMessageContaining(pojo.getName());
     }
 
+    @Test
+    @DisplayName("getFields() 返回防御性拷贝: 调用方置空不污染进程级缓存")
+    void getFieldsReturnsDefensiveCopy() {
+        ConstructorMetadataCache cache = new ConstructorMetadataCache();
+        ConstructorMetadata metadata = cache.getConstructorMetadata(SamplePojo.class);
+
+        java.lang.reflect.Field[] first = metadata.getFields();
+        assertThat(first).isNotEmpty();
+        first[0] = null; // attempt to corrupt the shared cached array
+
+        // A fresh read from the same cached metadata must be unaffected.
+        assertThat(cache.getConstructorMetadata(SamplePojo.class).getFields()).doesNotContainNull();
+        assertThat(metadata.getFields()).doesNotContainNull();
+    }
+
+    @Test
+    @DisplayName("getParameters() 返回防御性拷贝: 调用方置空不污染进程级缓存")
+    void getParametersReturnsDefensiveCopy() {
+        ConstructorMetadataCache cache = new ConstructorMetadataCache();
+        ConstructorMetadata metadata = cache.getConstructorMetadata(SamplePojo.class);
+
+        java.lang.reflect.Parameter[] first = metadata.getParameters();
+        assertThat(first).isNotEmpty();
+        first[0] = null;
+
+        assertThat(cache.getConstructorMetadata(SamplePojo.class).getParameters()).doesNotContainNull();
+        assertThat(metadata.getParameters()).doesNotContainNull();
+    }
+
     /**
      * Compiles a non-record POJO WITHOUT the {@code -parameters} flag so that its
      * constructor parameter names are not retained, then loads it. This reproduces

@@ -218,9 +218,55 @@ class  SemanticValidatorTest {
             "travel"
         );
 
+        // Range message is redacted: the raw field value (100) is no longer echoed
+        // into the message string (it remains available on the ConstraintViolation).
         assertThatThrownBy(() -> semanticValidator.validateSemantics(instance))
             .isInstanceOf(SemanticValidationException.class)
-            .hasMessage("语义验证失败：\n- amount: 值 100 超出范围 [1000, 10000000]\n- purpose: 值不匹配模式 ^(home|car|education|business)$");
+            .hasMessage("语义验证失败：\n- amount: 值超出范围 [1000, 10000000]\n- purpose: 值不匹配模式 ^(home|car|education|business)$");
+    }
+
+    @Test
+    void testValidateSemantics_rangeRejectsNaN() {
+        // NaN fails every ordinary comparison, so the old guard let it pass. It must
+        // now be reported as a violation.
+        assertThatThrownBy(() -> semanticValidator.validateSemantics(new NaNHolder(Double.NaN)))
+            .isInstanceOf(SemanticValidationException.class)
+            .satisfies(ex -> assertThat(((SemanticValidationException) ex).getViolations())
+                .extracting(ConstraintViolation::fieldName)
+                .containsExactly("value"));
+
+        // A normal in-range double still passes.
+        assertThatCode(() -> semanticValidator.validateSemantics(new NaNHolder(50.0)))
+            .doesNotThrowAnyException();
+    }
+
+    @Test
+    void testValidateSemantics_numberDeclaredDoubleIsRangeChecked() {
+        // Field is declared as Number but holds a Double. Classification by the
+        // RUNTIME value type routes it to the floating branch and checks minDouble/
+        // maxDouble. Previously the declared-type classifier took the integer branch,
+        // truncated 5.0 -> 5, compared against Long defaults, and wrongly passed.
+        assertThatThrownBy(() -> semanticValidator.validateSemantics(new NumberFieldHolder(5.0)))
+            .isInstanceOf(SemanticValidationException.class)
+            .satisfies(ex -> assertThat(((SemanticValidationException) ex).getViolations())
+                .extracting(ConstraintViolation::fieldName)
+                .containsExactly("value"));
+
+        // An in-range double passes.
+        assertThatCode(() -> semanticValidator.validateSemantics(new NumberFieldHolder(0.5)))
+            .doesNotThrowAnyException();
+    }
+
+    @Test
+    void testValidateSemantics_bigIntegerBeyondLongIsRangeChecked() {
+        // A BigInteger larger than Long.MAX_VALUE must not wrap through longValue();
+        // it must be compared as an integer against the annotation bounds.
+        java.math.BigInteger huge = java.math.BigInteger.valueOf(Long.MAX_VALUE).add(java.math.BigInteger.TEN);
+        assertThatThrownBy(() -> semanticValidator.validateSemantics(new BigIntegerHolder(huge)))
+            .isInstanceOf(SemanticValidationException.class)
+            .satisfies(ex -> assertThat(((SemanticValidationException) ex).getViolations())
+                .extracting(ConstraintViolation::fieldName)
+                .containsExactly("value"));
     }
 
     /**
@@ -310,6 +356,42 @@ class  SemanticValidatorTest {
         public DefaultRangeHolder(Double ratio, BigDecimal amount) {
             this.ratio = ratio;
             this.amount = amount;
+        }
+    }
+
+    /**
+     * @Range 应用于 Double 字段，用于验证 NaN 拒绝。
+     */
+    public static class NaNHolder {
+        @Range(minDouble = 0.0, maxDouble = 100.0)
+        private final Double value;
+
+        public NaNHolder(Double value) {
+            this.value = value;
+        }
+    }
+
+    /**
+     * 字段声明为抽象的 {@link Number}，运行时持有 Double。用于验证按运行时类型分类。
+     */
+    public static class NumberFieldHolder {
+        @Range(minDouble = 0.0, maxDouble = 1.0)
+        private final Number value;
+
+        public NumberFieldHolder(Number value) {
+            this.value = value;
+        }
+    }
+
+    /**
+     * BigInteger 字段，用于验证不经 longValue() 回绕的大整数范围校验。
+     */
+    public static class BigIntegerHolder {
+        @Range(min = 0, max = 1_000_000)
+        private final java.math.BigInteger value;
+
+        public BigIntegerHolder(java.math.BigInteger value) {
+            this.value = value;
         }
     }
 

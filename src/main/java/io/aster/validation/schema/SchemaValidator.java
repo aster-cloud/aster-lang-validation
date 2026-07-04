@@ -69,6 +69,22 @@ public class SchemaValidator {
         ConstructorMetadata metadata = constructorMetadataCache.getConstructorMetadata(targetClass);
         Map<String, Integer> fieldMapping = metadata.getFieldNameToParameterIndex();
         if (fieldMapping == null || fieldMapping.isEmpty()) {
+            // An empty mapping means we have no reliable field->parameter binding to
+            // validate against. This happens for a no-arg constructor (safe, nothing
+            // to validate) OR because the class is a non-record compiled without
+            // -parameters, in which case the mapping was deliberately left empty and
+            // metadata.isFallbackToFieldOrder() is set. In the latter case STRICT must
+            // NOT silently validate nothing: that would let unknown/missing fields pass
+            // unchecked. Fail closed with a clear signal instead. LENIENT keeps the
+            // legacy pass-through behavior.
+            if (metadata.isFallbackToFieldOrder()
+                && missingFieldPolicy == MissingFieldPolicy.STRICT) {
+                throw new SchemaValidationException(
+                    "Schema 验证失败：无法为类型 " + targetClass.getName()
+                        + " 建立可靠的字段映射（非 record 且构造器参数名不可用，fallbackToFieldOrder=true）。"
+                        + "STRICT 模式拒绝在无法校验的情况下静默放行；请将该类型声明为 record，"
+                        + "或在编译时启用 -parameters。");
+            }
             return;
         }
 
@@ -112,13 +128,36 @@ public class SchemaValidator {
                 continue;
             }
             if (parameters != null && index >= 0 && index < parameters.length
-                && Optional.class.equals(parameters[index].getType())) {
-                continue; // optional parameter, may be omitted
+                && isOmittableParameter(parameters[index])) {
+                continue; // optional/nullable parameter, may be omitted
             }
             required.add(field);
         }
         Collections.sort(required);
         return Collections.unmodifiableList(required);
+    }
+
+    /**
+     * A parameter may be omitted from the input when it declares an optional-style
+     * container ({@link Optional}, {@link java.util.OptionalInt},
+     * {@link java.util.OptionalLong}, {@link java.util.OptionalDouble}) or is
+     * annotated with any {@code @Nullable} annotation (matched by simple name so it
+     * works across jakarta/jspecify/jsr305/jetbrains variants).
+     */
+    private static boolean isOmittableParameter(Parameter parameter) {
+        Class<?> type = parameter.getType();
+        if (Optional.class.equals(type)
+            || java.util.OptionalInt.class.equals(type)
+            || java.util.OptionalLong.class.equals(type)
+            || java.util.OptionalDouble.class.equals(type)) {
+            return true;
+        }
+        for (java.lang.annotation.Annotation annotation : parameter.getAnnotations()) {
+            if ("Nullable".equals(annotation.annotationType().getSimpleName())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static List<String> computeUnknownFields(Map<String, Object> inputMap, Set<String> allowedFields) {

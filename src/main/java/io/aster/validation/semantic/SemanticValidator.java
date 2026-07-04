@@ -149,7 +149,25 @@ public class SemanticValidator {
             return;
         }
 
-        if (isFloatingNumber(field.getType(), value)) {
+        // NaN can never satisfy any range (every comparison against NaN is false),
+        // so the previous "doubleValue > max" guard let it slip through. Reject it
+        // explicitly. Only floating runtime types can be NaN.
+        if ((number instanceof Double || number instanceof Float)
+            && Double.isNaN(number.doubleValue())) {
+            violations.add(new SemanticValidationException.ConstraintViolation(
+                field.getName(),
+                value,
+                Range.class.getSimpleName(),
+                // Redacted: do not echo the raw field value into the message.
+                "值为 NaN，无法满足范围约束 [" + range.minDouble() + ", " + range.maxDouble() + "]"
+            ));
+            return;
+        }
+
+        // Classify by the RUNTIME value type, not the declared field type: a field
+        // declared Number/Object holding a Double must be range-checked as floating,
+        // and a BigInteger/BigDecimal must not be wrapped through longValue().
+        if (isFloatingValue(number)) {
             double doubleValue = number.doubleValue();
             double min = range.minDouble();
             double max = range.maxDouble();
@@ -158,7 +176,20 @@ public class SemanticValidator {
                     field.getName(),
                     value,
                     Range.class.getSimpleName(),
-                    "值 " + doubleValue + " 超出范围 [" + min + ", " + max + "]"
+                    // Redacted: value is carried on the violation, never in the message.
+                    "值超出范围 [" + min + ", " + max + "]"
+                ));
+            }
+        } else if (number instanceof java.math.BigInteger bigInteger) {
+            // Compare without wrapping through long (BigInteger can exceed long range).
+            java.math.BigInteger min = java.math.BigInteger.valueOf(range.min());
+            java.math.BigInteger max = java.math.BigInteger.valueOf(range.max());
+            if (bigInteger.compareTo(min) < 0 || bigInteger.compareTo(max) > 0) {
+                violations.add(new SemanticValidationException.ConstraintViolation(
+                    field.getName(),
+                    value,
+                    Range.class.getSimpleName(),
+                    "值超出范围 [" + range.min() + ", " + range.max() + "]"
                 ));
             }
         } else {
@@ -170,7 +201,8 @@ public class SemanticValidator {
                     field.getName(),
                     value,
                     Range.class.getSimpleName(),
-                    "值 " + longValue + " 超出范围 [" + min + ", " + max + "]"
+                    // Redacted: value is carried on the violation, never in the message.
+                    "值超出范围 [" + min + ", " + max + "]"
                 ));
             }
         }
@@ -262,38 +294,15 @@ public class SemanticValidator {
         }
     }
 
-    private boolean isFloatingNumber(Class<?> fieldType, Object value) {
-        Class<?> type = fieldType.isPrimitive() ? wrapPrimitive(fieldType) : fieldType;
-        return type == Float.class
-            || type == Double.class
+    /**
+     * Classify by the runtime value type. A field read reflectively is always boxed,
+     * so a {@code double}/{@code float} primitive arrives as {@link Double}/{@link Float}
+     * here — meaning we no longer need the declared type to decide. {@link java.math.BigDecimal}
+     * is treated as floating; {@link java.math.BigInteger} is handled separately by the caller.
+     */
+    private boolean isFloatingValue(Number value) {
+        return value instanceof Double
+            || value instanceof Float
             || value instanceof java.math.BigDecimal;
-    }
-
-    private Class<?> wrapPrimitive(Class<?> primitive) {
-        if (primitive == double.class) {
-            return Double.class;
-        }
-        if (primitive == float.class) {
-            return Float.class;
-        }
-        if (primitive == long.class) {
-            return Long.class;
-        }
-        if (primitive == int.class) {
-            return Integer.class;
-        }
-        if (primitive == short.class) {
-            return Short.class;
-        }
-        if (primitive == byte.class) {
-            return Byte.class;
-        }
-        if (primitive == boolean.class) {
-            return Boolean.class;
-        }
-        if (primitive == char.class) {
-            return Character.class;
-        }
-        return primitive;
     }
 }

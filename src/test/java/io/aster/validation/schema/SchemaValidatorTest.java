@@ -1,9 +1,12 @@
 package io.aster.validation.schema;
 
+import io.aster.validation.metadata.ConstructorMetadata;
 import io.aster.validation.metadata.ConstructorMetadataCache;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Constructor;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -192,6 +195,47 @@ class SchemaValidatorTest {
 
         assertThatCode(() -> lenient.validateSchema(SampleClass.class, input))
             .doesNotThrowAnyException();
+    }
+
+    @Test
+    void testValidateSchema_strictThrowsOnFallbackToFieldOrder() throws Exception {
+        // A non-record class compiled without -parameters yields an empty field
+        // mapping with fallbackToFieldOrder=true. Under STRICT the validator must
+        // NOT silently validate nothing — it must fail closed. We can't produce a
+        // real fallback class from this test source (the build compiles tests with
+        // -parameters), so we stub the cache to return fallback metadata directly;
+        // this exercises exactly the SchemaValidator branch under test.
+        ConstructorMetadata fallbackMetadata = fallbackMetadataFor(SampleClass.class);
+        ConstructorMetadataCache stubCache = new ConstructorMetadataCache() {
+            @Override
+            public ConstructorMetadata getConstructorMetadata(Class<?> clazz) {
+                return fallbackMetadata;
+            }
+        };
+
+        Map<String, Object> input = new HashMap<>();
+        input.put("name", "Alice");
+
+        SchemaValidator strict = new SchemaValidator(stubCache, SchemaValidator.MissingFieldPolicy.STRICT);
+        assertThatThrownBy(() -> strict.validateSchema(SampleClass.class, input))
+            .isInstanceOf(SchemaValidationException.class)
+            .hasMessageContaining("fallbackToFieldOrder");
+
+        // LENIENT keeps the legacy pass-through behavior (no throw).
+        SchemaValidator lenient = new SchemaValidator(stubCache, SchemaValidator.MissingFieldPolicy.LENIENT);
+        assertThatCode(() -> lenient.validateSchema(SampleClass.class, input))
+            .doesNotThrowAnyException();
+    }
+
+    private static ConstructorMetadata fallbackMetadataFor(Class<?> type) {
+        Constructor<?> ctor = type.getDeclaredConstructors()[0];
+        return new ConstructorMetadata(
+            ctor,
+            ctor.getParameters(),
+            type.getDeclaredFields(),
+            Collections.emptyMap(), // empty mapping — as SKIP policy produces for a fallback class
+            true                    // fallbackToFieldOrder
+        );
     }
 
     /**
