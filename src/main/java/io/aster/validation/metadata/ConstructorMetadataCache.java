@@ -77,9 +77,16 @@ public class ConstructorMetadataCache {
     }
 
     private ConstructorMetadata buildMetadata(Class<?> clazz) {
-        Constructor<?>[] constructors = clazz.getConstructors();
+        // 审计 #19 Low：record 用 getDeclaredConstructors()——package-private / 嵌套 record 的
+        // canonical constructor 未必 public，getConstructors()（仅 public）会空、误抛"未找到公共
+        // 构造函数"，尽管其规范构造器可解析。非 record 仍要求 public 构造器（沿用既有语义）。
+        Constructor<?>[] constructors =
+            clazz.isRecord() ? clazz.getDeclaredConstructors() : clazz.getConstructors();
         if (constructors.length == 0) {
-            throw new IllegalArgumentException("未找到公共构造函数: " + clazz.getName());
+            throw new IllegalArgumentException(
+                clazz.isRecord()
+                    ? "未找到构造函数: " + clazz.getName()
+                    : "未找到公共构造函数: " + clazz.getName());
         }
 
         Constructor<?> constructor = selectConstructor(clazz, constructors);

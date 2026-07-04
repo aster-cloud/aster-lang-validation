@@ -36,6 +36,25 @@ class ConstructorMetadataCacheTest {
     }
 
     @Test
+    @DisplayName("审计 #19 Low: package-private record 解析成功(不因 getConstructors 空而误抛)")
+    void packagePrivateRecordResolves() {
+        ConstructorMetadataCache cache = new ConstructorMetadataCache();
+        ConstructorMetadata metadata = cache.getConstructorMetadata(PackagePrivateRecord.class);
+        assertThat(metadata.getFieldNameToParameterIndex())
+            .containsEntry("code", 0).containsEntry("level", 1);
+        assertThat(metadata.isFallbackToFieldOrder()).isFalse();
+    }
+
+    @Test
+    @DisplayName("审计 #19 Low: 嵌套 private record 也解析成功")
+    void nestedPrivateRecordResolves() {
+        ConstructorMetadataCache cache = new ConstructorMetadataCache();
+        ConstructorMetadata metadata = cache.getConstructorMetadata(NestedPrivateRecord.class);
+        assertThat(metadata.getFieldNameToParameterIndex())
+            .containsEntry("id", 0).containsEntry("label", 1);
+    }
+
+    @Test
     @DisplayName("普通类 + -parameters: 按参数名建立可靠映射, fallback=false")
     void regularClassWithParameterNamesMapsCorrectly() {
         // This test class is compiled by the project build with -parameters, so
@@ -200,6 +219,15 @@ class ConstructorMetadataCacheTest {
     // --- fixtures ---
 
     public record SampleRecord(String code, Integer level) {
+    }
+
+    // 审计 #19 Low：package-private（非 public）record——其 canonical constructor 非 public，
+    // getConstructors() 返回空。修复后应通过 getDeclaredConstructors() 解析成功。
+    record PackagePrivateRecord(String code, Integer level) {
+    }
+
+    // 嵌套 private record（更严格的非 public 场景）。
+    private record NestedPrivateRecord(String id, String label) {
     }
 
     public static class SamplePojo {

@@ -9,7 +9,9 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -202,13 +204,21 @@ public class PolicyMetadataLoader {
     }
 
     private Method findPolicyMethod(Class<?> policyClass, String functionName) {
+        // 审计 #19 Low：用 getMethods()（含继承的 public 方法）而非 getDeclaredMethods()（仅本类），
+        // 否则从父类继承的 public-static 入口点会被误判为"未找到"。过滤条件已限定 public+static，
+        // getMethods() 返回的继承 public-static 方法正是目标；同名重载去重（按参数签名）避免
+        // getMethods() 可能返回桥接/同签名重复。
         List<Method> matches = new ArrayList<>();
-        for (Method method : policyClass.getDeclaredMethods()) {
+        Set<String> seenSignatures = new HashSet<>();
+        for (Method method : policyClass.getMethods()) {
             int modifiers = method.getModifiers();
             if (method.getName().equals(functionName)
                 && java.lang.reflect.Modifier.isStatic(modifiers)
                 && java.lang.reflect.Modifier.isPublic(modifiers)) {
-                matches.add(method);
+                String sig = method.getName() + Arrays.toString(method.getParameterTypes());
+                if (seenSignatures.add(sig)) {
+                    matches.add(method);
+                }
             }
         }
 
