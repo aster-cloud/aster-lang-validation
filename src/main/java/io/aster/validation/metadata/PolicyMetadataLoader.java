@@ -150,10 +150,13 @@ public class PolicyMetadataLoader {
         // Allowlist 强制 — 默认空集就是拒绝所有加载。
         // 此校验必须在 Class.forName 之前进行；否则任意类名都会被尝试解析。
         if (!isPackageAllowed(policyModule)) {
+            // 审计 #19 Low：不要在异常消息里枚举整个 allowlist（会向被拒调用方泄露完整白名单）。
+            // 只回报被拒的包；完整 allowlist 仅在服务端 debug 日志可见供排障。
+            logger.debug("Policy package rejected: {} (allowlist size={})",
+                policyModule, packageAllowlist.size());
             throw new SecurityException(
                 "Policy package not in allowlist: " + policyModule +
-                " (allowed: " + packageAllowlist + "). " +
-                "Call PolicyMetadataLoader.setPackageAllowlist(...) before loading policies."
+                ". Call PolicyMetadataLoader.setPackageAllowlist(...) before loading policies."
             );
         }
 
@@ -279,7 +282,11 @@ public class PolicyMetadataLoader {
                     if (name == null || !name.endsWith("_fn.class")) {
                         continue;
                     }
-                    String className = name.replace('/', '.').replace(".class", "");
+                    // 只剥结尾的 ".class" 后缀，不能用 replace(".class","")——后者会替换路径中
+                    // 任意位置的 ".class"（如 x.classic/y_fn.class → x.ic/y_fn），破坏包名。
+                    // 已由 endsWith("_fn.class") 保证以此结尾，substring 到长度-6 安全（审计 #19 Low）。
+                    String className = name.substring(0, name.length() - ".class".length())
+                        .replace('/', '.');
                     if (!className.endsWith("_fn")) {
                         continue;
                     }
