@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# 最小权限：本 CI 仅做 checkout + 漂移 gate + 构建测试，无任何写操作（推 commit/tag、发 release、
+# 推镜像、评论 PR、上传 SARIF、云 OIDC 均无），故顶层收敛为只读 contents: read。
+# 跨仓 checkout 用独立 PAT（CROSS_REPO_TOKEN），不依赖 GITHUB_TOKEN，无需额外写权限。
+permissions:
+  contents: read
+
 # 同一 ref 上新 push 到来时取消尚在跑的过时 CI（PR 连续 push 常见）——省算力/排队。
 # 该仓 CI 无发布/部署副作用（release 是独立 workflow），故可直接 cancel 过时 run。
 concurrency:
