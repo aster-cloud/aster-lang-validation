@@ -43,7 +43,7 @@ jobs:
           fetch-depth: 0
       # catalog-derived version（ADR 0023 §9）：先 checkout platform 并 publishToMavenLocal，
       # 本仓 Gradle 才能解析 catalog 派生的 project version。与 core/truffle/runtime/hi/locales 同构。
-      - uses: actions/checkout@v6
+      - uses: aster-cloud/aster-lang-platform/.github/actions/checkout-sibling@main
         with:
           repository: aster-cloud/aster-lang-platform
           path: aster-lang-platform
@@ -87,7 +87,7 @@ jobs:
 
       # 共享版本目录（ADR 0012/0023 §9）：本仓 version=catalog-derived，须先 platform
       # publishToMavenLocal 才能配置期解析 asterLibs catalog。
-      - uses: actions/checkout@v6
+      - uses: aster-cloud/aster-lang-platform/.github/actions/checkout-sibling@main
         with:
           repository: aster-cloud/aster-lang-platform
           path: aster-lang-platform
