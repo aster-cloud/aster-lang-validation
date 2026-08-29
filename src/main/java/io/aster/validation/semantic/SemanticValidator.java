@@ -4,6 +4,7 @@ import io.aster.validation.constraints.NotEmpty;
 import io.aster.validation.constraints.Pattern;
 import io.aster.validation.constraints.Range;
 import io.aster.validation.metadata.ConstructorMetadataCache;
+import io.aster.validation.metadata.UnreliableConstructorMappingException;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
@@ -97,8 +98,19 @@ public class SemanticValidator {
                 for (Field field : constructorMetadataCache.getConstructorMetadata(current).getFields()) {
                     fields.add(field);
                 }
-            } catch (IllegalArgumentException ex) {
-                // 父类可能缺少公共构造器，回退到直接读取声明字段
+            } catch (IllegalArgumentException | UnreliableConstructorMappingException ex) {
+                // 父类可能缺少公共构造器，或构造器参数名不可用导致 field->parameter
+                // 映射不可靠 —— 两种情况都回退到直接读取声明字段。
+                //
+                // ★必须同时捕 UnreliableConstructorMappingException（issue #43）：
+                //   它直接继承 RuntimeException（**不是** IllegalArgumentException），
+                //   于是在 ConstructorMetadataCache 配 THROW 策略时会从这里逃逸，
+                //   让**根本不需要构造器映射**的语义校验整体崩溃——
+                //   本方法只用 getFields()，与 field->parameter 映射毫无关系。
+                //
+                //   触发条件是「非 record 且编译时没带 -parameters」。本仓测试带该 flag，
+                //   所以本地跑不出来；但把本库当依赖用的消费方未必带，
+                //   那正是 THROW 策略存在的意义（fail fast 于**映射**场景）。
                 for (Field field : current.getDeclaredFields()) {
                     fields.add(field);
                 }
@@ -113,22 +125,29 @@ public class SemanticValidator {
      * 调用方应当转译成 violation；不再返回 null 静默跳过。
      */
     private Object readFieldValue(Object instance, Field field) {
-        boolean accessible = field.canAccess(instance);
+        // ★不再翻转共享 Field 的 accessible 开关（issue #44）。
+        //
+        //   缓存里的 Field 实例被**所有线程共享**（ConstructorMetadata.getFields()
+        //   只做数组浅拷贝，Field 对象本身是同一个）。原实现做
+        //   trySetAccessible() → get() → finally setAccessible(false)：
+        //   两个线程并发校验同一类型时，一方在 finally 里把开关关掉，
+        //   另一方的 field.get 抛 IllegalAccessException，被 fail-closed 逻辑
+        //   转成**虚假的 field-access violation**——校验结果随线程调度而变。
+        //
+        //   现在：只在必要时**打开**，打开后**不再关回去**。理由——
+        //   - 关回去本就不提供任何安全保证：Field 是共享的，任何并发调用方都能
+        //     再次打开；「用完就关」在共享对象上是幻觉；
+        //   - 反射可访问性由模块系统与 SecurityManager 决定，不由这一次开关决定；
+        //   - 不写共享状态即消除竞态，这是唯一能让并发结果确定的做法。
         try {
-            if (!accessible) {
-                if (!field.trySetAccessible()) {
-                    throw new FieldAccessSkippedException(
-                        "field.trySetAccessible() returned false (module/JMH restriction?)"
-                    );
-                }
+            if (!field.canAccess(instance) && !field.trySetAccessible()) {
+                throw new FieldAccessSkippedException(
+                    "field.trySetAccessible() returned false (module/JMH restriction?)"
+                );
             }
             return field.get(instance);
         } catch (IllegalAccessException ex) {
             throw new FieldAccessSkippedException("IllegalAccessException: " + ex.getMessage());
-        } finally {
-            if (!accessible && field.canAccess(instance)) {
-                field.setAccessible(false);
-            }
         }
     }
 
