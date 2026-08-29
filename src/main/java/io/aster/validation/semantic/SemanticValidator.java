@@ -169,8 +169,28 @@ public class SemanticValidator {
         // and a BigInteger/BigDecimal must not be wrapped through longValue().
         if (isFloatingValue(number)) {
             double doubleValue = number.doubleValue();
+            // ★浮点分支必须能用整数界限（issue #42）。
+            //
+            //   此前这里只读 minDouble()/maxDouble()，其默认值是 ∓Double.MAX_VALUE。
+            //   于是 `@Range(min = 0, max = 100) double x = 1e9` **静默通过**——
+            //   用户写了约束，校验器什么都没做，也不告警。
+            //
+            //   而 double 字段经反射读取必然装箱为 Double，isFloatingValue 恒为 true，
+            //   所以「对 double 字段写整数界限」这一最自然的写法**必然**落进这个空洞。
+            //   实测：double/float/BigDecimal 三个字段值 1e9、约束 [0,100]，
+            //   四个字段里只有 long 那个被抓到。
+            //
+            //   回退规则：用户**显式设置过**整数界限（≠ 默认 Long.MIN/MAX）而浮点界限
+            //   仍是默认值时，采用整数界限。两组都设过则以浮点界限为准（更精确，
+            //   且是本分支的原生语义）；两组都没设则维持原样（无约束）。
             double min = range.minDouble();
             double max = range.maxDouble();
+            if (min == -Double.MAX_VALUE && range.min() != Long.MIN_VALUE) {
+                min = range.min();
+            }
+            if (max == Double.MAX_VALUE && range.max() != Long.MAX_VALUE) {
+                max = range.max();
+            }
             if (doubleValue < min || doubleValue > max) {
                 violations.add(new SemanticValidationException.ConstraintViolation(
                     field.getName(),
