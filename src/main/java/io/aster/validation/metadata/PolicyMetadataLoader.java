@@ -105,8 +105,19 @@ public class PolicyMetadataLoader {
 
     /**
      * Drop cached metadata whose module no longer passes the current allowlist.
-     * Called after any allowlist mutation so cache hits can never outlive the
-     * permission that admitted them.
+     *
+     * <p>★这是**尽力而为**的清理，不是安全边界（issue #45）。
+     * {@code ConcurrentHashMap.keySet().removeIf(...)} 是弱一致迭代：它既不等待、
+     * 也看不见正在 {@code computeIfAbsent} 映射函数中尚未链入的条目。实测确认
+     * （最小复现：映射函数内挂起时并发 {@code removeIf}）——{@code removeIf}
+     * <b>不会阻塞</b>，随后插入的条目<b>存活</b>。
+     *
+     * <p>因此真正的强制点在 {@link #loadPolicyMetadata} 的<b>每一次</b>返回路径上
+     * （含 cache hit），而不是这里。本方法的价值是及时释放不再允许的条目、
+     * 避免缓存无限增长，仅此而已。
+     *
+     * <p>此前这里的 javadoc 写的是 “cache hits can never outlive the permission
+     * that admitted them” —— 那是一个实现给不出的保证。
      */
     private void evictForbiddenFromCache() {
         metadataCache.keySet().removeIf(qualifiedName -> {
@@ -130,6 +141,32 @@ public class PolicyMetadataLoader {
      * @return 策略元数据缓存对象
      */
     public PolicyMetadata loadPolicyMetadata(String qualifiedName) {
+        // ★allowlist 在**每一次**返回前强制，含 cache hit（issue #45）。
+        //
+        //   不能只依赖 createMetadata 里那次校验 + 收紧时的驱逐：allowlist 校验
+        //   发生在 computeIfAbsent 的映射函数**内部**，而条目写入完成于其**之后**；
+        //   evictForbiddenFromCache 的 removeIf 是弱一致迭代，看不见在途条目。
+        //   于是「旧 allowlist 下开始加载 → 期间 allowlist 收紧 → 加载完成」
+        //   会留下一个绕过新 allowlist 的缓存条目，此后每次 cache hit 都放行。
+        //
+        //   这里补一次校验即可闭合：校验本身是纯内存的集合前缀匹配，幂等且便宜
+        //   （相比 Class.forName 可忽略），放在最前面还能让「已被拒的包」连
+        //   computeIfAbsent 都不进。
+        //
+        //   ★注意是**先校验再取缓存**：反过来的话，cache hit 仍会先返回值。
+        int lastDot = qualifiedName == null ? -1 : qualifiedName.lastIndexOf('.');
+        if (lastDot <= 0) {
+            throw new SecurityException("Invalid policy qualified name: " + qualifiedName);
+        }
+        String policyModule = qualifiedName.substring(0, lastDot);
+        if (!isPackageAllowed(policyModule)) {
+            logger.debug("Policy package rejected (cache path): {} (allowlist size={})",
+                policyModule, packageAllowlist.size());
+            throw new SecurityException(
+                "Policy package not in allowlist: " + policyModule +
+                ". Call PolicyMetadataLoader.setPackageAllowlist(...) before loading policies."
+            );
+        }
         return metadataCache.computeIfAbsent(qualifiedName, this::createMetadata);
     }
 
