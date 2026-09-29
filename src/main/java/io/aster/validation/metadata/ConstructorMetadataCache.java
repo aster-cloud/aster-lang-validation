@@ -10,8 +10,11 @@ import java.lang.reflect.RecordComponent;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 /**
  * 构造器元数据缓存，负责缓存领域对象的构造方法信息。
@@ -117,9 +120,61 @@ public class ConstructorMetadataCache {
                 }
             }
         }
-        return Arrays.stream(constructors)
-            .max((a, b) -> Integer.compare(a.getParameterCount(), b.getParameterCount()))
-            .orElse(constructors[0]);
+        int maxArity = Arrays.stream(constructors).mapToInt(Constructor::getParameterCount).max().orElse(0);
+        List<Constructor<?>> candidates = Arrays.stream(constructors)
+            .filter(c -> c.getParameterCount() == maxArity)
+            .toList();
+        return candidates.size() == 1 ? candidates.get(0) : breakArityTie(clazz, candidates);
+    }
+
+    /**
+     * 参数个数并列时的确定性选择。
+     *
+     * <p>{@link Class#getConstructors()} 的返回顺序在 Javadoc 中明确为未指定，若并列时任取其一，
+     * field->parameter 映射（进而 STRICT 模式的未知/缺失字段判定）会随 JVM 实现而变。
+     * 以「参数名 ∩ 声明字段名」最大者为准；仍并列则拒绝，与
+     * {@code PolicyMetadataLoader.findPolicyMethod} 对同名重载的策略一致。
+     *
+     * <p>参数名不可用（非 record 且未带 -parameters）时映射本身就不可靠，
+     * 由 {@link UnreliableMappingPolicy} 统一处理，此处不额外拒绝。
+     */
+    private Constructor<?> breakArityTie(Class<?> clazz, List<Constructor<?>> candidates) {
+        boolean namesPresent = candidates.stream()
+            .flatMap(c -> Arrays.stream(c.getParameters()))
+            .allMatch(Parameter::isNamePresent);
+        if (!namesPresent) {
+            return candidates.get(0);
+        }
+
+        Set<String> fieldNames = Arrays.stream(clazz.getDeclaredFields())
+            .map(Field::getName)
+            .collect(Collectors.toSet());
+        Map<Constructor<?>, Long> overlap = new HashMap<>();
+        for (Constructor<?> candidate : candidates) {
+            overlap.put(candidate, Arrays.stream(candidate.getParameters())
+                .map(Parameter::getName)
+                .filter(fieldNames::contains)
+                .count());
+        }
+        long best = Collections.max(overlap.values());
+        List<Constructor<?>> winners = candidates.stream()
+            .filter(c -> overlap.get(c) == best)
+            .toList();
+        if (winners.size() == 1) {
+            return winners.get(0);
+        }
+
+        StringBuilder signatures = new StringBuilder();
+        for (Constructor<?> winner : winners) {
+            if (signatures.length() > 0) {
+                signatures.append(", ");
+            }
+            signatures.append(winner);
+        }
+        throw new IllegalArgumentException(
+            "类存在多个参数个数相同且与字段名重合度相同的公共构造器，无法确定 field->parameter 映射: "
+            + clazz.getName() + " (候选: " + signatures + ")。"
+            + "请只保留一个参数最多的公共构造器，或让其参数名与字段名一一对应。");
     }
 
     private Map<String, Integer> buildParameterMapping(Class<?> clazz,
