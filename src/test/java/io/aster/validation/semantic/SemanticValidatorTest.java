@@ -218,11 +218,11 @@ class  SemanticValidatorTest {
             "travel"
         );
 
-        // Range message is redacted: the raw field value (100) is no longer echoed
-        // into the message string (it remains available on the ConstraintViolation).
+        // Range 消息来自 Range.message() 默认模板（issue #56），{min}/{max} 填入生效界限；
+        // 原始字段值（100）不回显进消息，仅由 ConstraintViolation 携带。
         assertThatThrownBy(() -> semanticValidator.validateSemantics(instance))
             .isInstanceOf(SemanticValidationException.class)
-            .hasMessage("语义验证失败：\n- amount: 值超出范围 [1000, 10000000]\n- purpose: 值不匹配模式 ^(home|car|education|business)$");
+            .hasMessage("语义验证失败：\n- amount: 值必须在 1000 到 10000000 之间\n- purpose: 值不匹配模式 ^(home|car|education|business)$");
     }
 
     @Test

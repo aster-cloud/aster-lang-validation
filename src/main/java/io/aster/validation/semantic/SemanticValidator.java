@@ -7,6 +7,8 @@ import io.aster.validation.metadata.ConstructorMetadataCache;
 import io.aster.validation.metadata.UnreliableConstructorMappingException;
 
 import java.lang.reflect.Field;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -168,83 +170,109 @@ public class SemanticValidator {
             return;
         }
 
-        // NaN can never satisfy any range (every comparison against NaN is false),
-        // so the previous "doubleValue > max" guard let it slip through. Reject it
-        // explicitly. Only floating runtime types can be NaN.
-        if ((number instanceof Double || number instanceof Float)
-            && Double.isNaN(number.doubleValue())) {
+        // 界限只解析一次，之后 NaN 消息、违规判定、违规消息全部复用同一对界限：
+        // 运行时类型只决定「值怎么变成 BigDecimal」，不再决定「读注解的哪组界限」。
+        RangeBounds bounds = RangeBounds.of(range);
+
+        // NaN 与任何数比较都为 false，±Infinity 也不可能落在有限区间内；
+        // 二者都无法转成 BigDecimal，必须在比较前单独拒绝。只有浮点运行时类型会出现这些值。
+        // 消息里不回显原始值，值由 violation 自身携带。
+        if (isNonFinite(number)) {
             violations.add(new SemanticValidationException.ConstraintViolation(
                 field.getName(),
                 value,
                 Range.class.getSimpleName(),
-                // Redacted: do not echo the raw field value into the message.
-                "值为 NaN，无法满足范围约束 [" + range.minDouble() + ", " + range.maxDouble() + "]"
+                "值为 NaN 或 Infinity，无法满足范围约束 " + bounds.interval()
             ));
             return;
         }
 
-        // Classify by the RUNTIME value type, not the declared field type: a field
-        // declared Number/Object holding a Double must be range-checked as floating,
-        // and a BigInteger/BigDecimal must not be wrapped through longValue().
-        if (isFloatingValue(number)) {
-            double doubleValue = number.doubleValue();
-            // ★浮点分支必须能用整数界限（issue #42）。
-            //
-            //   此前这里只读 minDouble()/maxDouble()，其默认值是 ∓Double.MAX_VALUE。
-            //   于是 `@Range(min = 0, max = 100) double x = 1e9` **静默通过**——
-            //   用户写了约束，校验器什么都没做，也不告警。
-            //
-            //   而 double 字段经反射读取必然装箱为 Double，isFloatingValue 恒为 true，
-            //   所以「对 double 字段写整数界限」这一最自然的写法**必然**落进这个空洞。
-            //   实测：double/float/BigDecimal 三个字段值 1e9、约束 [0,100]，
-            //   四个字段里只有 long 那个被抓到。
-            //
-            //   回退规则：用户**显式设置过**整数界限（≠ 默认 Long.MIN/MAX）而浮点界限
-            //   仍是默认值时，采用整数界限。两组都设过则以浮点界限为准（更精确，
-            //   且是本分支的原生语义）；两组都没设则维持原样（无约束）。
-            double min = range.minDouble();
-            double max = range.maxDouble();
-            if (min == -Double.MAX_VALUE && range.min() != Long.MIN_VALUE) {
-                min = range.min();
-            }
-            if (max == Double.MAX_VALUE && range.max() != Long.MAX_VALUE) {
-                max = range.max();
-            }
-            if (doubleValue < min || doubleValue > max) {
-                violations.add(new SemanticValidationException.ConstraintViolation(
-                    field.getName(),
-                    value,
-                    Range.class.getSimpleName(),
-                    // Redacted: value is carried on the violation, never in the message.
-                    "值超出范围 [" + min + ", " + max + "]"
-                ));
-            }
-        } else if (number instanceof java.math.BigInteger bigInteger) {
-            // Compare without wrapping through long (BigInteger can exceed long range).
-            java.math.BigInteger min = java.math.BigInteger.valueOf(range.min());
-            java.math.BigInteger max = java.math.BigInteger.valueOf(range.max());
-            if (bigInteger.compareTo(min) < 0 || bigInteger.compareTo(max) > 0) {
-                violations.add(new SemanticValidationException.ConstraintViolation(
-                    field.getName(),
-                    value,
-                    Range.class.getSimpleName(),
-                    "值超出范围 [" + range.min() + ", " + range.max() + "]"
-                ));
-            }
-        } else {
-            long longValue = number.longValue();
-            long min = range.min();
-            long max = range.max();
-            if (longValue < min || longValue > max) {
-                violations.add(new SemanticValidationException.ConstraintViolation(
-                    field.getName(),
-                    value,
-                    Range.class.getSimpleName(),
-                    // Redacted: value is carried on the violation, never in the message.
-                    "值超出范围 [" + min + ", " + max + "]"
-                ));
-            }
+        if (!bounds.contains(toBigDecimal(number))) {
+            violations.add(new SemanticValidationException.ConstraintViolation(
+                field.getName(),
+                value,
+                Range.class.getSimpleName(),
+                bounds.format(range.message())
+            ));
         }
+    }
+
+    /**
+     * {@code @Range} 四个界限属性归一化后的一对有效界限；{@code null} 表示该侧无界。
+     *
+     * <p>为什么归一化：{@code min/max} 与 {@code minDouble/maxDouble} 两组属性乘以
+     * 整数、浮点、大数三类运行时值，若在各条分支里分别读取界限，总有一半组合被漏掉
+     * （整型字段只设浮点界限、浮点字段只设整数界限），且 BigDecimal 会被压成 double
+     * 比较而丢失精度，NaN 消息与违规消息又各自拼接。统一成一对 {@link BigDecimal}
+     * 之后，这些差异全部消失。
+     *
+     * <p>解析规则（上下界各自独立）：显式设置了浮点界限则用浮点界限；否则用显式设置的
+     * 整数界限；两组都是默认值则该侧无界。两组都设时浮点优先——它更精确，且与
+     * 浮点分支原有的回退规则一致。
+     */
+    private record RangeBounds(BigDecimal min, BigDecimal max) {
+
+        static RangeBounds of(Range range) {
+            return new RangeBounds(
+                resolve(range.minDouble(), -Double.MAX_VALUE, range.min(), Long.MIN_VALUE),
+                resolve(range.maxDouble(), Double.MAX_VALUE, range.max(), Long.MAX_VALUE)
+            );
+        }
+
+        private static BigDecimal resolve(double floating, double floatingDefault,
+                                          long integral, long integralDefault) {
+            if (floating != floatingDefault) {
+                return BigDecimal.valueOf(floating);
+            }
+            if (integral != integralDefault) {
+                return BigDecimal.valueOf(integral);
+            }
+            return null;
+        }
+
+        /** 闭区间判定。 */
+        boolean contains(BigDecimal value) {
+            return (min == null || value.compareTo(min) >= 0)
+                && (max == null || value.compareTo(max) <= 0);
+        }
+
+        /** 把注解 message 模板中的 {@code {min}}/{@code {max}} 替换为有效界限。 */
+        String format(String template) {
+            return template
+                .replace("{min}", describe(min, "-∞"))
+                .replace("{max}", describe(max, "+∞"));
+        }
+
+        String interval() {
+            return "[" + describe(min, "-∞") + ", " + describe(max, "+∞") + "]";
+        }
+
+        private static String describe(BigDecimal bound, String unbounded) {
+            return bound == null ? unbounded : bound.toPlainString();
+        }
+    }
+
+    /**
+     * 按运行时类型精确转换。字段经反射读取必然装箱，所以无需再看声明类型：
+     * BigDecimal/BigInteger 原样保留精度，Double/Float 走 {@link BigDecimal#valueOf(double)}
+     * （保持十进制表示，与 double 的顺序一致），其余整型经 {@code longValue()}。
+     */
+    private static BigDecimal toBigDecimal(Number number) {
+        if (number instanceof BigDecimal decimal) {
+            return decimal;
+        }
+        if (number instanceof BigInteger integer) {
+            return new BigDecimal(integer);
+        }
+        if (number instanceof Double || number instanceof Float) {
+            return BigDecimal.valueOf(number.doubleValue());
+        }
+        return BigDecimal.valueOf(number.longValue());
+    }
+
+    private static boolean isNonFinite(Number number) {
+        return (number instanceof Double || number instanceof Float)
+            && !Double.isFinite(number.doubleValue());
     }
 
     private void processNotEmptyConstraint(Field field,
@@ -331,17 +359,5 @@ public class SemanticValidator {
                 pattern.message().replace("{regexp}", pattern.regexp())
             ));
         }
-    }
-
-    /**
-     * Classify by the runtime value type. A field read reflectively is always boxed,
-     * so a {@code double}/{@code float} primitive arrives as {@link Double}/{@link Float}
-     * here — meaning we no longer need the declared type to decide. {@link java.math.BigDecimal}
-     * is treated as floating; {@link java.math.BigInteger} is handled separately by the caller.
-     */
-    private boolean isFloatingValue(Number value) {
-        return value instanceof Double
-            || value instanceof Float
-            || value instanceof java.math.BigDecimal;
     }
 }
