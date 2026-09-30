@@ -9,6 +9,12 @@ import io.aster.validation.metadata.ConstructorMetadataCache;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.DoubleAccumulator;
+import java.util.concurrent.atomic.DoubleAdder;
+import java.util.concurrent.atomic.LongAccumulator;
+import java.util.concurrent.atomic.LongAdder;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -373,5 +379,113 @@ class RangeBoundsNormalizationTest {
         assertThat(violationsOf(new InfinityBoundWithNonFiniteValueHolder()))
             .extracting(SemanticValidationException.ConstraintViolation::message)
             .containsExactly("值为 NaN 或 Infinity，无法满足范围约束 [-∞, +∞]");
+    }
+
+    // ---------- #64：非整型的 Number 子类按 double 处理，而非 longValue() 截断 ----------
+
+    private static DoubleAdder adderOf(double d) {
+        DoubleAdder adder = new DoubleAdder();
+        adder.add(d);
+        return adder;
+    }
+
+    private static DoubleAccumulator accumulatorOf(double d) {
+        DoubleAccumulator acc = new DoubleAccumulator(Double::sum, 0.0);
+        acc.accumulate(d);
+        return acc;
+    }
+
+    /** 用户自定义的 Number 子类：持有小数，longValue() 会截断。 */
+    public static final class Fraction extends Number {
+        private final double value;
+
+        Fraction(double value) {
+            this.value = value;
+        }
+
+        @Override public int intValue() { return (int) value; }
+        @Override public long longValue() { return (long) value; }
+        @Override public float floatValue() { return (float) value; }
+        @Override public double doubleValue() { return value; }
+    }
+
+    public static class FractionalNumberSubclassHolder {
+        @Range(min = 0, max = 100)
+        public DoubleAdder adder = adderOf(100.7);
+
+        @Range(min = 0, max = 100)
+        public DoubleAccumulator accumulator = accumulatorOf(100.7);
+
+        @Range(min = 0, max = 100)
+        public Fraction custom = new Fraction(100.7);
+
+        @Range(min = 0, max = 100)
+        public DoubleAdder inRange = adderOf(50.5);
+    }
+
+    @Test
+    @DisplayName("#64 DoubleAdder/DoubleAccumulator/自定义 Number 的 100.7 不得被 longValue() 截成 100 放行")
+    void fractionalNumberSubclassesAreNotTruncated() {
+        assertThat(violationsOf(new FractionalNumberSubclassHolder()))
+            .extracting(SemanticValidationException.ConstraintViolation::fieldName)
+            .containsExactlyInAnyOrder("adder", "accumulator", "custom");
+    }
+
+    public static class NaNInNumberSubclassHolder {
+        @Range(min = 0, max = 100)
+        public DoubleAdder nan = adderOf(Double.NaN);
+
+        @Range(min = 0, max = 100)
+        public Fraction infinity = new Fraction(Double.POSITIVE_INFINITY);
+    }
+
+    @Test
+    @DisplayName("#64 Number 子类持有 NaN/Infinity 时按非有限值拒绝，而非 longValue()=0 通过")
+    void nonFiniteInNumberSubclassIsRejected() {
+        List<SemanticValidationException.ConstraintViolation> violations =
+            violationsOf(new NaNInNumberSubclassHolder());
+        assertThat(violations)
+            .extracting(SemanticValidationException.ConstraintViolation::fieldName)
+            .containsExactlyInAnyOrder("nan", "infinity");
+        assertThat(violations)
+            .extracting(SemanticValidationException.ConstraintViolation::message)
+            .containsOnly("值为 NaN 或 Infinity，无法满足范围约束 [0, 100]");
+    }
+
+    public static class ExactIntegralWhitelistHolder {
+        // 若这些类型误走 double，Long.MAX_VALUE-1 会取整到 2^63 而被误报越界
+        @Range(max = Long.MAX_VALUE - 1)
+        public AtomicLong atomicLong = new AtomicLong(Long.MAX_VALUE - 1);
+
+        @Range(max = Long.MAX_VALUE - 1)
+        public LongAdder longAdder = new LongAdder();
+
+        @Range(max = Long.MAX_VALUE - 1)
+        public LongAccumulator longAccumulator = new LongAccumulator(Long::sum, Long.MAX_VALUE - 1);
+
+        @Range(min = 0, max = 100)
+        public AtomicInteger atomicInteger = new AtomicInteger(100);
+    }
+
+    @Test
+    @DisplayName("#64 反向护栏：AtomicLong/LongAdder/LongAccumulator/AtomicInteger 仍按 longValue() 精确比较")
+    void exactIntegralTypesStayExact() {
+        ExactIntegralWhitelistHolder holder = new ExactIntegralWhitelistHolder();
+        holder.longAdder.add(Long.MAX_VALUE - 1);
+        assertThatCode(() -> validator.validateSemantics(holder))
+            .doesNotThrowAnyException();
+    }
+
+    public static class ExactIntegralOutOfRangeHolder {
+        @Range(min = 0, max = 100)
+        public AtomicLong v = new AtomicLong(101);
+    }
+
+    @Test
+    @DisplayName("#64 反向护栏：白名单整型越界仍被拒绝")
+    void exactIntegralOutOfRangeIsRejected() {
+        assertThat(violationsOf(new ExactIntegralOutOfRangeHolder()))
+            .extracting(SemanticValidationException.ConstraintViolation::fieldName)
+            .containsExactly("v");
     }
 }
