@@ -233,6 +233,56 @@ class RangeBoundsNormalizationTest {
             .isInstanceOf(SemanticValidationException.class);
     }
 
+    // ---------- #63：显式写哨兵值等价于无界（文档化契约） ----------
+
+    public static class SentinelBoundsHolder {
+        @Range(min = 0, max = Long.MAX_VALUE)
+        public BigInteger beyondLong = BigInteger.TWO.pow(70);
+
+        @Range(min = Long.MIN_VALUE, max = 0)
+        public BigInteger belowLong = BigInteger.TWO.pow(70).negate();
+
+        @Range(minDouble = -Double.MAX_VALUE, maxDouble = Double.MAX_VALUE)
+        public BigDecimal beyondDouble = new BigDecimal("1e400");
+
+        @Range(minDouble = -Double.MAX_VALUE, maxDouble = 0.0)
+        public BigDecimal belowDouble = new BigDecimal("-1e400");
+    }
+
+    @Test
+    @DisplayName("#63 显式 Long.MIN/MAX_VALUE 与 ∓Double.MAX_VALUE 界限对 BigInteger/BigDecimal 即无界（见 Range JavaDoc / README）")
+    void explicitSentinelBoundsMeanUnboundedForBigNumbers() {
+        assertThatCode(() -> validator.validateSemantics(new SentinelBoundsHolder()))
+            .doesNotThrowAnyException();
+    }
+
+    public static class SentinelBoundMessageHolder {
+        @Range(min = 0, max = Long.MAX_VALUE)
+        public BigInteger v = BigInteger.ONE.negate();
+    }
+
+    @Test
+    @DisplayName("#63 哨兵值一侧在违规消息里显示为无界，而非 Long.MAX_VALUE 数字")
+    void sentinelBoundIsDescribedAsUnboundedInMessage() {
+        assertThat(violationsOf(new SentinelBoundMessageHolder()))
+            .extracting(SemanticValidationException.ConstraintViolation::message)
+            .containsExactly("值必须在 0 到 +∞ 之间");
+    }
+
+    public static class RealBoundBesideSentinelHolder {
+        // 想约束「必须能装进 long」，就得写真实界限
+        @Range(min = 0, max = Long.MAX_VALUE - 1)
+        public BigInteger v = BigInteger.TWO.pow(70);
+    }
+
+    @Test
+    @DisplayName("#63 反向护栏：真实界限 Long.MAX_VALUE-1 对 BigInteger 2^70 仍然生效")
+    void realBoundStillRejectsBigInteger() {
+        assertThat(violationsOf(new RealBoundBesideSentinelHolder()))
+            .extracting(SemanticValidationException.ConstraintViolation::fieldName)
+            .containsExactly("v");
+    }
+
     // ---------- #62：±Infinity / NaN 作为显式浮点界限 ----------
 
     public static class NegativeInfinityLowerBoundHolder {
