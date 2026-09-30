@@ -209,6 +209,12 @@ public class SemanticValidator {
      * <p>解析规则（上下界各自独立）：显式设置了浮点界限则用浮点界限；否则用显式设置的
      * 整数界限；两组都是默认值则该侧无界。两组都设时浮点优先——它更精确，且与
      * 浮点分支原有的回退规则一致。
+     *
+     * <p>非有限的浮点界限（±Infinity、NaN）视同「未设置浮点界限」：{@code -Infinity}
+     * 作下界、{@code +Infinity} 作上界本来就是"该侧无界"的自然写法，而 NaN 与任何数比较
+     * 都为 false，同样等价于不设界；三者都无法转成 BigDecimal，若直接
+     * {@code BigDecimal.valueOf} 会让 {@code NumberFormatException} 从
+     * {@code validateSemantics} 逃出，连合法值都无法校验。
      */
     private record RangeBounds(BigDecimal min, BigDecimal max) {
 
@@ -221,7 +227,7 @@ public class SemanticValidator {
 
         private static BigDecimal resolve(double floating, double floatingDefault,
                                           long integral, long integralDefault) {
-            if (floating != floatingDefault) {
+            if (floating != floatingDefault && Double.isFinite(floating)) {
                 return BigDecimal.valueOf(floating);
             }
             if (integral != integralDefault) {

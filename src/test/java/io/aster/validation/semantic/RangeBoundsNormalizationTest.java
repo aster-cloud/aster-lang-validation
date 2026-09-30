@@ -232,4 +232,96 @@ class RangeBoundsNormalizationTest {
         assertThatThrownBy(() -> validator.validateSemantics(new LargeIntegerBoundHolder()))
             .isInstanceOf(SemanticValidationException.class);
     }
+
+    // ---------- #62：±Infinity / NaN 作为显式浮点界限 ----------
+
+    public static class NegativeInfinityLowerBoundHolder {
+        @Range(minDouble = Double.NEGATIVE_INFINITY, maxDouble = 100.0)
+        public double v;
+
+        NegativeInfinityLowerBoundHolder(double v) {
+            this.v = v;
+        }
+    }
+
+    public static class PositiveInfinityUpperBoundHolder {
+        @Range(minDouble = 0.0, maxDouble = Double.POSITIVE_INFINITY)
+        public double v;
+
+        PositiveInfinityUpperBoundHolder(double v) {
+            this.v = v;
+        }
+    }
+
+    @Test
+    @DisplayName("#62 -Infinity 作下界：该侧无界，范围内的值通过，另一侧仍生效")
+    void negativeInfinityLowerBoundMeansUnbounded() {
+        assertThatCode(() -> validator.validateSemantics(new NegativeInfinityLowerBoundHolder(50.0)))
+            .doesNotThrowAnyException();
+        assertThatCode(() -> validator.validateSemantics(new NegativeInfinityLowerBoundHolder(-1e300)))
+            .doesNotThrowAnyException();
+        assertThat(violationsOf(new NegativeInfinityLowerBoundHolder(150.0)))
+            .extracting(SemanticValidationException.ConstraintViolation::message)
+            .containsExactly("值必须在 -∞ 到 100.0 之间");
+    }
+
+    @Test
+    @DisplayName("#62 +Infinity 作上界：该侧无界，范围内的值通过，另一侧仍生效")
+    void positiveInfinityUpperBoundMeansUnbounded() {
+        assertThatCode(() -> validator.validateSemantics(new PositiveInfinityUpperBoundHolder(50.0)))
+            .doesNotThrowAnyException();
+        assertThatCode(() -> validator.validateSemantics(new PositiveInfinityUpperBoundHolder(1e300)))
+            .doesNotThrowAnyException();
+        assertThat(violationsOf(new PositiveInfinityUpperBoundHolder(-1.0)))
+            .extracting(SemanticValidationException.ConstraintViolation::message)
+            .containsExactly("值必须在 0.0 到 +∞ 之间");
+    }
+
+    public static class NaNBoundHolder {
+        @Range(minDouble = Double.NaN, maxDouble = 100.0)
+        public double v;
+
+        NaNBoundHolder(double v) {
+            this.v = v;
+        }
+    }
+
+    public static class NaNBoundFallsBackToIntegralHolder {
+        // 浮点界限是 NaN 时视同未设置，退回到显式的整数界限
+        @Range(min = 10, minDouble = Double.NaN, maxDouble = 100.0)
+        public double v;
+
+        NaNBoundFallsBackToIntegralHolder(double v) {
+            this.v = v;
+        }
+    }
+
+    @Test
+    @DisplayName("#62 NaN 作界限：视同未设置，绝不让 NumberFormatException 逃出 validateSemantics")
+    void nanBoundIsTreatedAsUnset() {
+        assertThatCode(() -> validator.validateSemantics(new NaNBoundHolder(50.0)))
+            .doesNotThrowAnyException();
+        assertThat(violationsOf(new NaNBoundHolder(150.0)))
+            .extracting(SemanticValidationException.ConstraintViolation::message)
+            .containsExactly("值必须在 -∞ 到 100.0 之间");
+
+        assertThatCode(() -> validator.validateSemantics(new NaNBoundFallsBackToIntegralHolder(50.0)))
+            .doesNotThrowAnyException();
+        assertThat(violationsOf(new NaNBoundFallsBackToIntegralHolder(5.0)))
+            .extracting(SemanticValidationException.ConstraintViolation::message)
+            .containsExactly("值必须在 10 到 100.0 之间");
+    }
+
+    public static class InfinityBoundWithNonFiniteValueHolder {
+        @Range(minDouble = Double.NEGATIVE_INFINITY, maxDouble = Double.POSITIVE_INFINITY)
+        public double v = Double.POSITIVE_INFINITY;
+    }
+
+    @Test
+    @DisplayName("#62 两侧都是 Infinity 界限时，Infinity 值仍按「非有限值」拒绝，消息显示 [-∞, +∞]")
+    void nonFiniteValueStillRejectedUnderInfinityBounds() {
+        assertThat(violationsOf(new InfinityBoundWithNonFiniteValueHolder()))
+            .extracting(SemanticValidationException.ConstraintViolation::message)
+            .containsExactly("值为 NaN 或 Infinity，无法满足范围约束 [-∞, +∞]");
+    }
 }
