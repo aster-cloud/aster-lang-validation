@@ -26,9 +26,22 @@
 
 | 注解 | 说明 |
 |------|------|
-| `@Range` | 数值范围约束（最小值、最大值） |
+| `@Range` | 数值范围约束（闭区间），对所有 `Number` 运行时值精确比较 |
 | `@NotEmpty` | 非空约束，适用于字符串和集合 |
 | `@Pattern` | 正则表达式匹配约束 |
+
+### `@Range` 的界限解析与哨兵值
+
+上下界各自独立解析：设置了 `minDouble`/`maxDouble` 则以其为准，否则用 `min`/`max`，两组都未设置则该侧无界。
+
+注解属性无法携带"是否显式设置"，只能以"等于默认值"判断，所以下列写法**即使显式写出也表示该侧无界**：
+
+| 属性 | 视为无界的取值 |
+|------|----------------|
+| `min` / `max` | `Long.MIN_VALUE` / `Long.MAX_VALUE` |
+| `minDouble` / `maxDouble` | `-Double.MAX_VALUE` / `Double.MAX_VALUE`、`∓Infinity`、`NaN` |
+
+后果：`@Range(min = 0, max = Long.MAX_VALUE) BigInteger v` **不会**约束"必须能装进 long"，2^70 会通过；`@Range(minDouble = -Double.MAX_VALUE, maxDouble = Double.MAX_VALUE) BigDecimal v` 同理，1e400 会通过。需要该语义时请写真实界限（如 `max = Long.MAX_VALUE - 1`）。违规消息中无界一侧显示为 `-∞`/`+∞`。
 
 ## 元数据支持
 

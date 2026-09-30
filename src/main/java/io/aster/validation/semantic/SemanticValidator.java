@@ -13,7 +13,12 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAccumulator;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * Layer 2 语义约束验证器，负责对领域对象实例执行业务规则校验。
@@ -175,9 +180,10 @@ public class SemanticValidator {
         RangeBounds bounds = RangeBounds.of(range);
 
         // NaN 与任何数比较都为 false，±Infinity 也不可能落在有限区间内；
-        // 二者都无法转成 BigDecimal，必须在比较前单独拒绝。只有浮点运行时类型会出现这些值。
+        // 二者都无法转成 BigDecimal，必须在比较前单独拒绝。
         // 消息里不回显原始值，值由 violation 自身携带。
-        if (isNonFinite(number)) {
+        BigDecimal exact = toBigDecimal(number);
+        if (exact == null) {
             violations.add(new SemanticValidationException.ConstraintViolation(
                 field.getName(),
                 value,
@@ -187,7 +193,7 @@ public class SemanticValidator {
             return;
         }
 
-        if (!bounds.contains(toBigDecimal(number))) {
+        if (!bounds.contains(exact)) {
             violations.add(new SemanticValidationException.ConstraintViolation(
                 field.getName(),
                 value,
@@ -209,6 +215,12 @@ public class SemanticValidator {
      * <p>解析规则（上下界各自独立）：显式设置了浮点界限则用浮点界限；否则用显式设置的
      * 整数界限；两组都是默认值则该侧无界。两组都设时浮点优先——它更精确，且与
      * 浮点分支原有的回退规则一致。
+     *
+     * <p>非有限的浮点界限（±Infinity、NaN）视同「未设置浮点界限」：{@code -Infinity}
+     * 作下界、{@code +Infinity} 作上界本来就是"该侧无界"的自然写法，而 NaN 与任何数比较
+     * 都为 false，同样等价于不设界；三者都无法转成 BigDecimal，若直接
+     * {@code BigDecimal.valueOf} 会让 {@code NumberFormatException} 从
+     * {@code validateSemantics} 逃出，连合法值都无法校验。
      */
     private record RangeBounds(BigDecimal min, BigDecimal max) {
 
@@ -221,7 +233,7 @@ public class SemanticValidator {
 
         private static BigDecimal resolve(double floating, double floatingDefault,
                                           long integral, long integralDefault) {
-            if (floating != floatingDefault) {
+            if (floating != floatingDefault && Double.isFinite(floating)) {
                 return BigDecimal.valueOf(floating);
             }
             if (integral != integralDefault) {
@@ -253,9 +265,24 @@ public class SemanticValidator {
     }
 
     /**
-     * 按运行时类型精确转换。字段经反射读取必然装箱，所以无需再看声明类型：
-     * BigDecimal/BigInteger 原样保留精度，Double/Float 走 {@link BigDecimal#valueOf(double)}
-     * （保持十进制表示，与 double 的顺序一致），其余整型经 {@code longValue()}。
+     * {@code longValue()} 即精确值的 {@link Number} 类型白名单。
+     *
+     * <p>{@code Number} 的子类并不都是整型：JDK 的 {@code DoubleAdder}/{@code DoubleAccumulator}
+     * 以及用户自定义子类持有小数，{@code longValue()} 会向零截断，NaN 会变成 0 而静默通过。
+     * 所以只有列在这里的类型才走 {@code longValue()}，其余一律按 double 处理。
+     * 按精确类匹配而非 {@code instanceof}：白名单之外的子类可能改写取值语义。
+     */
+    private static final Set<Class<?>> EXACT_INTEGRAL_TYPES = Set.of(
+        Byte.class, Short.class, Integer.class, Long.class,
+        AtomicInteger.class, AtomicLong.class, LongAdder.class, LongAccumulator.class
+    );
+
+    /**
+     * 按运行时类型精确转换；非有限值（NaN、±Infinity）返回 {@code null}。
+     * 字段经反射读取必然装箱，所以无需再看声明类型：
+     * BigDecimal/BigInteger 原样保留精度，{@link #EXACT_INTEGRAL_TYPES} 经 {@code longValue()}，
+     * 其余全部经 {@code doubleValue()} 走 {@link BigDecimal#valueOf(double)}
+     * （保持十进制表示，与 double 的顺序一致）。
      */
     private static BigDecimal toBigDecimal(Number number) {
         if (number instanceof BigDecimal decimal) {
@@ -264,15 +291,11 @@ public class SemanticValidator {
         if (number instanceof BigInteger integer) {
             return new BigDecimal(integer);
         }
-        if (number instanceof Double || number instanceof Float) {
-            return BigDecimal.valueOf(number.doubleValue());
+        if (EXACT_INTEGRAL_TYPES.contains(number.getClass())) {
+            return BigDecimal.valueOf(number.longValue());
         }
-        return BigDecimal.valueOf(number.longValue());
-    }
-
-    private static boolean isNonFinite(Number number) {
-        return (number instanceof Double || number instanceof Float)
-            && !Double.isFinite(number.doubleValue());
+        double floating = number.doubleValue();
+        return Double.isFinite(floating) ? BigDecimal.valueOf(floating) : null;
     }
 
     private void processNotEmptyConstraint(Field field,
