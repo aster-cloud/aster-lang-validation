@@ -123,6 +123,43 @@ class ConstructorMetadataCacheTest {
         assertThat(metadata.getParameters()).doesNotContainNull();
     }
 
+    @Test
+    @DisplayName("issue #60: 同参数个数的多个构造器按「参数名∩字段名」最大者确定性选择")
+    void sameArityConstructorsPickedByFieldNameOverlap() {
+        // 修复前 Stream.max 保留 getConstructors() 先遍历到的那个，顺序由 JVM 决定，
+        // 实测映射可能是 {name=0, age=1} 也可能是 {name=0, label=1}。
+        ConstructorMetadataCache cache = new ConstructorMetadataCache();
+        ConstructorMetadata metadata = cache.getConstructorMetadata(TieByOverlap.class);
+
+        assertThat(metadata.getFieldNameToParameterIndex())
+            .containsOnlyKeys("name", "age")
+            .containsEntry("name", 0)
+            .containsEntry("age", 1);
+        assertThat(metadata.getConstructor().getParameterTypes())
+            .containsExactly(String.class, int.class);
+    }
+
+    @Test
+    @DisplayName("issue #60: 重合度仍并列时拒绝，而非静默任取其一")
+    void sameArityConstructorsStillTiedThrows() {
+        ConstructorMetadataCache cache = new ConstructorMetadataCache();
+
+        assertThatThrownBy(() -> cache.getConstructorMetadata(Ambiguous.class))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining(Ambiguous.class.getName())
+            .hasMessageContaining("多个参数个数相同");
+    }
+
+    @Test
+    @DisplayName("issue #60: 参数最多的构造器唯一时不受并列规则影响")
+    void uniqueMaxArityConstructorStillWins() {
+        ConstructorMetadataCache cache = new ConstructorMetadataCache();
+        ConstructorMetadata metadata = cache.getConstructorMetadata(UniqueMaxArity.class);
+
+        assertThat(metadata.getFieldNameToParameterIndex())
+            .containsOnlyKeys("a", "b", "c");
+    }
+
     /**
      * Compiles a non-record POJO WITHOUT the {@code -parameters} flag so that its
      * constructor parameter names are not retained, then loads it. This reproduces
@@ -237,6 +274,58 @@ class ConstructorMetadataCacheTest {
         public SamplePojo(String name, int age) {
             this.name = name;
             this.age = age;
+        }
+    }
+
+    // issue #60：两个 2 参构造器，只有 (name, age) 与声明字段完全重合。
+    public static class TieByOverlap {
+        private final String name;
+        private final int age;
+
+        public TieByOverlap(String name, int age) {
+            this.name = name;
+            this.age = age;
+        }
+
+        public TieByOverlap(String name, String label) {
+            this(name, Integer.parseInt(label));
+        }
+    }
+
+    // issue #60：两个 2 参构造器参数名与字段名重合度相同（都是 2），无法确定性选择。
+    public static class Ambiguous {
+        private final String a;
+        private final Object b;
+
+        public Ambiguous(String a, int b) {
+            this.a = a;
+            this.b = b;
+        }
+
+        public Ambiguous(String a, String b) {
+            this.a = a;
+            this.b = b;
+        }
+    }
+
+    // issue #60：参数最多的构造器唯一，其余较少参数的重载不参与并列判定。
+    public static class UniqueMaxArity {
+        private final String a;
+        private final int b;
+        private final boolean c;
+
+        public UniqueMaxArity(String a, int b, boolean c) {
+            this.a = a;
+            this.b = b;
+            this.c = c;
+        }
+
+        public UniqueMaxArity(String a, int b) {
+            this(a, b, false);
+        }
+
+        public UniqueMaxArity(String a, boolean c) {
+            this(a, 0, c);
         }
     }
 }

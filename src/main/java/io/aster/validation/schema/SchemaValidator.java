@@ -160,11 +160,17 @@ public class SchemaValidator {
         return false;
     }
 
+    /** 输入 Map 中 null 键在错误报告里的显示名；Java 标识符不可能与之冲突。 */
+    static final String NULL_KEY_NAME = "<null>";
+
     private static List<String> computeUnknownFields(Map<String, Object> inputMap, Set<String> allowedFields) {
         List<String> unknown = new ArrayList<>();
         for (String key : inputMap.keySet()) {
-            if (!allowedFields.contains(key)) {
-                unknown.add(key);
+            // HashMap 允许 null 键。它不可能对应任何构造器参数，且后续排序与拼接都不能碰 null，
+            // 所以在进入未知字段列表前就换成可读的占位名，让调用方拿到的仍是 SchemaValidationException。
+            String name = key == null ? NULL_KEY_NAME : key;
+            if (!allowedFields.contains(name)) {
+                unknown.add(name);
             }
         }
         Collections.sort(unknown);

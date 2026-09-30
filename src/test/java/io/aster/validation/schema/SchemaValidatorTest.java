@@ -227,6 +227,44 @@ class SchemaValidatorTest {
             .doesNotThrowAnyException();
     }
 
+    @Test
+    void testValidateSchema_nullKeyReportedAsUnknownField() {
+        // issue #59：HashMap 允许 null 键；修复前 null 进入未知字段列表后 Collections.sort
+        // 触发 String.compareTo(null) 抛 NPE，调用方拿不到 SchemaValidationException。
+        Map<String, Object> input = new HashMap<>();
+        input.put("name", "Alice");
+        input.put("age", 28);
+        input.put("active", true);
+        input.put(null, "x");
+        input.put("zz", "y");
+        input.put("aa", "z");
+
+        assertThatThrownBy(() -> schemaValidator.validateSchema(SampleClass.class, input))
+            .isInstanceOf(SchemaValidationException.class)
+            .satisfies(ex -> {
+                SchemaValidationException validationException = (SchemaValidationException) ex;
+                assertThat(validationException.getUnknownFields())
+                    .containsExactly(SchemaValidator.NULL_KEY_NAME, "aa", "zz");
+                assertThat(validationException.getMissingFields()).isEmpty();
+            })
+            .hasMessageContaining("<null>");
+    }
+
+    @Test
+    void testValidateSchema_nullKeyAloneStillRejected() {
+        // 只有 null 一个未知键时修复前不会触发排序比较，但也应稳定报告为未知字段。
+        Map<String, Object> input = new HashMap<>();
+        input.put("name", "Alice");
+        input.put("age", 28);
+        input.put("active", true);
+        input.put(null, "x");
+
+        assertThatThrownBy(() -> schemaValidator.validateSchema(SampleClass.class, input))
+            .isInstanceOf(SchemaValidationException.class)
+            .satisfies(ex -> assertThat(((SchemaValidationException) ex).getUnknownFields())
+                .containsExactly(SchemaValidator.NULL_KEY_NAME));
+    }
+
     private static ConstructorMetadata fallbackMetadataFor(Class<?> type) {
         Constructor<?> ctor = type.getDeclaredConstructors()[0];
         return new ConstructorMetadata(
