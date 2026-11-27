@@ -44,6 +44,10 @@ jobs:
           distribution: 'temurin'
           cache: 'gradle'
 
+      # Maven Central 限流（429）防护：此后的 Gradle 构建优先走 Central 镜像，缺货回落原仓库（制品逐字节相同）。
+      # 本地路径引用：platform 已由 checkout-sibling 按同名分支检出到 ./aster-lang-platform。
+      - uses: ./aster-lang-platform/.github/actions/maven-central-mirror
+
       # catalog bootstrap（ADR 0023 §9）：本仓 version=catalog-derived，settings 从
       # mavenLocal 解析 catalog → 须先把已 checkout 的 platform publishToMavenLocal，
       # 否则 ./gradlew 配置期解析不到 asterLibs catalog（原 issue #6 deferred 的顾虑，本次消解）。
